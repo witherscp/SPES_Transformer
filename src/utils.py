@@ -5,10 +5,67 @@ from pathlib import Path
 from functools import lru_cache
 from loguru import logger
 import nibabel as nib
+import mat73
+from scipy.io import loadmat as lm
 
 
-def load_yaml(yaml_f):
-    with open(yaml_f, "r") as f:
+def loadmat(file_path):
+    """Load a .mat file, handling both v7.3 and earlier versions.
+
+    Args:
+        file_path (str or Path): Path to the .mat file.
+
+    Returns:
+        dict: A dictionary containing the contents of the .mat file.
+    """
+
+    outputs = {}
+    try:
+        spes = lm(file_path)
+        outputs["fs"] = np.uint16(spes["fs"][0][0])
+        if spes["labels"].shape[0] == 1:
+            outputs["labels"] = [l[0] for l in spes["labels"][0]]
+        elif spes["labels"].ndim == 1:
+            outputs["labels"] = spes["labels"]
+        else:
+            outputs["labels"] = [l[0][0] for l in spes["labels"]]
+
+    except NotImplementedError:
+        spes = mat73.loadmat(file_path)
+        outputs["fs"] = np.uint16(spes["fs"])
+        outputs["labels"] = spes["labels"]
+
+    try:
+        outputs["pulse"] = spes["filt_data"]
+    except KeyError:
+        outputs["pulse"] = spes["pulse"]
+
+    outputs["labels"] = [l.replace(" ", "") for l in outputs["labels"]]  # get rid of spaces
+
+    return outputs
+
+
+def load_yaml(yaml_f="src/config/default.yaml"):
+    """Load a YAML configuration file.
+
+    Args:
+            yaml_f (str or Path): Path to the YAML file. Can be absolute or relative to package root.
+
+    Returns:
+        dict: A dictionary containing the YAML file contents.
+    """
+
+    yaml_path = Path(yaml_f)
+
+    # If path is not absolute, resolve it relative to the package root
+    if not yaml_path.is_absolute():
+        # Get the directory containing this utils.py file
+        utils_dir = Path(__file__).parent
+        # Go up to package root (SPES_Transformer/)
+        package_root = utils_dir.parent
+        yaml_path = package_root / yaml_f
+
+    with open(yaml_path, "r") as f:
         config = yaml.safe_load(f)
     return config
 
@@ -25,8 +82,7 @@ def get_subj_path(subj, path="subj_seeg_path"):
         Path: The subject's directory.
     """
 
-    config_f = "/config/default.yaml"
-    config = load_yaml(config_f)
+    config = load_yaml()
 
     subj_dir = Path(config["Paths"][path].replace("$SUBJ", subj))
 
@@ -49,14 +105,13 @@ def load_roi_assignments(subj, subj_seeg_dir):
 
     Args:
         subj (str): The name of the patient.
-        subj_seeg_dir (Path): The subject's SEEG directory from get_subj_seeg_dir(subj).
+        subj_seeg_dir (Path): The subject's SEEG directory from get_subj_path(subj, path='subj_seeg_path').
 
     Returns:
         pd.DataFrame: A DataFrame containing the ROI assignments, or an empty DataFrame if not found.
     """
 
-    config_f = "/config/default.yaml"
-    config = load_yaml(config_f)
+    config = load_yaml()
     roi_df_path = subj_seeg_dir / config["Paths"]["roi_assignments_file"]
 
     try:
@@ -139,7 +194,7 @@ def dks_to_broad_region(dks_region_inp):
     Maps a DKS region name to a broader brain region category.
 
     Args:
-        dks_region (str): The DKS region name to be mapped.
+        dks_region_inp (str): The DKS region name to be mapped.
 
     Returns:
         str: The broader brain region category corresponding to the input DKS region.
@@ -212,10 +267,7 @@ def dks_to_broad_region(dks_region_inp):
         return "Hippocampus"
     elif "thalamus" in dks_region:
         return "Thalamus"
-    elif any(
-        keyword in dks_region
-        for keyword in ["pallidum", "putamen", "caudate", "accumbens"]
-    ):
+    elif any(keyword in dks_region for keyword in ["pallidum", "putamen", "caudate", "accumbens"]):
         return "Basal Ganglia"
     elif "unknown" in dks_region:
         return "Unknown"
@@ -242,20 +294,17 @@ def get_soz_label_dict(subj, IZ_as_NIZ=True):
         dict: A dictionary mapping channel names to their corresponding SOZ labels.
     """
     # load config
-    config_f = "/config/default.yaml"
-    config = load_yaml(config_f)
+    config = load_yaml()
 
     soz_labels_df = pd.read_csv(
         config["Paths"]["soz_labels_fpath"], names=["Patient", "Bipole", "Label"]
     )
-    pat_labels = soz_labels_df[soz_labels_df.Patient == subj]
+    pat_labels = soz_labels_df[soz_labels_df.Patient == subj].copy()
     if pat_labels.empty:
-        logger.error(
-            f"{subj} not found in SOZ labels file: {config['Paths']['soz_labels_fpath']}"
-        )
+        logger.error(f"{subj} not found in SOZ labels file: {config['Paths']['soz_labels_fpath']}")
         return {}
 
-    pat_labels.Bipole = pat_labels.Bipole.str.replace(" ", "")
+    pat_labels["Bipole"] = pat_labels["Bipole"].str.replace(" ", "")
 
     # Map numeric labels to string labels
     pat_labels["Label"] = pat_labels["Label"].apply(map_label)
@@ -265,14 +314,21 @@ def get_soz_label_dict(subj, IZ_as_NIZ=True):
 
     soz_label_dict = pat_labels.set_index("Bipole")["Label"].to_dict()
 
-    logger.success(
-        f"Built SOZ label dict for {subj} with {len(soz_label_dict)} channels (cached)"
-    )
+    logger.success(f"Built SOZ label dict for {subj} with {len(soz_label_dict)} channels (cached)")
 
     return soz_label_dict
 
 
 def map_label(label):
+    """Map numeric SOZ label to string label.
+
+    Args:
+        label (int): Numeric SOZ label (0, 1, 2, or 3).
+
+    Returns:
+        str: Corresponding string SOZ label ("NIZ", "SOZ", "PZ", or "IZ").
+    """
+
     label = int(label)
     match label:
         case 0:
@@ -285,38 +341,51 @@ def map_label(label):
             return "IZ"
 
 
-def get_mni_coords(subj):
+@lru_cache(maxsize=None)
+@logger.catch
+def get_mni_coords_dict(subj):
     """
     Load the MNI electrode coordinates for a given patient.
+
     Args:
         subj (str): Patient identifier to locate the appropriate coordinate file.
+
     Returns:
-        pd.DataFrame: A DataFrame containing electrode MNI coordinates with columns ['Contact', 'X', 'Y', 'Z'].
+        dict: A dictionary mapping channel names to their MNI coordinates as (x, y, z) tuples.
     """
 
     coords_df = _get_patient_coords(subj)
     if coords_df.empty:
-        return pd.DataFrame()
+        return {}
 
     mni_affine = _load_mni_affine(subj)
     if mni_affine is None:
-        return pd.DataFrame()
+        return {}
 
     coords_pat = coords_df[["X", "Y", "Z"]].to_numpy()
     coords_mni = _transform_to_mni(coords_pat, mni_affine)
 
     mni_coords_df = pd.DataFrame(coords_mni, columns=["X", "Y", "Z"])
     mni_coords_df.insert(0, "Contact", coords_df["Contact"].values)
+    mni_coords_df["Coords"] = list(zip(mni_coords_df.X, mni_coords_df.Y, mni_coords_df.Z))
 
-    return mni_coords_df
+    mni_coords_dict = mni_coords_df.set_index("Contact")["Coords"].to_dict()
+
+    logger.success(
+        f"Built MNI coords dict for {subj} with {len(mni_coords_dict)} channels (cached)"
+    )
+
+    return mni_coords_dict
 
 
 def calc_euc_distance(coords_df, chan1, chan2):
     """Calculate the Euclidean distance between two channels given their coordinates.
+
     Args:
         coords_df (pd.DataFrame): DataFrame containing electrode coordinates with columns ['Contact', 'X', 'Y', 'Z'].
         chan1 (str): The name of the first channel.
         chan2 (str): The name of the second channel.
+
     Returns:
         float: The Euclidean distance between the two channels.
     """
@@ -341,16 +410,14 @@ def _load_bip_lut(subj, subj_seeg_dir):
 
     Args:
         subj (str): The name of the patient.
-        subj_seeg_dir (Path): The subject's SEEG directory from get_subj_seeg_dir(subj).
+        subj_seeg_dir (Path): The subject's SEEG directory from get_subj_path(subj, path='subj_seeg_path').
+
     Returns:
         pd.DataFrame: A DataFrame containing the bipolar lookup table with columns ['Long', 'Short'].
     """
-    config_f = "/config/default.yaml"
-    config = load_yaml(config_f)
+    config = load_yaml()
 
-    bip_lut_path = subj_seeg_dir / config["Paths"]["subj_bip_lut_file"].replace(
-        "$SUBJ", subj
-    )
+    bip_lut_path = subj_seeg_dir / config["Paths"]["subj_bip_lut_file"].replace("$SUBJ", subj)
     bip_lut = pd.read_csv(bip_lut_path, names=["Long", "Short"])
     return bip_lut
 
@@ -381,15 +448,11 @@ def _add_short_label_to_roi_df(roi_df, bip_lut):
 
         # Map long → short electrode name
         roi_df[f"{c}_short_prefix"] = roi_df[f"{c}_prefix"].map(long_to_short)
-        roi_df[f"{c}_short_prefix"] = roi_df[f"{c}_short_prefix"].fillna(
-            roi_df[f"{c}_prefix"]
-        )
+        roi_df[f"{c}_short_prefix"] = roi_df[f"{c}_short_prefix"].fillna(roi_df[f"{c}_prefix"])
         roi_df[f"{c}_short"] = roi_df[f"{c}_short_prefix"] + roi_df[f"{c}_num"]
 
     # Combine into final short-form bipole
-    roi_df["Short Bip Label"] = (
-        roi_df["contact1_short"] + "-" + roi_df["contact2_short"]
-    )
+    roi_df["Short Bip Label"] = roi_df["contact1_short"] + "-" + roi_df["contact2_short"]
 
     return roi_df
 
@@ -421,9 +484,7 @@ def _load_mni_affine(subj):
 
          [x_mni, y_mni, z_mni, 1] = [x_pat, y_pat, z_pat, 1] @ mni_affine.T
     """
-
-    config_f = "/config/default.yaml"
-    config_analysis = load_yaml(config_f)
+    config_analysis = load_yaml()
     subj_seeg_dir = get_subj_path(subj, path="subj_seeg_path")
     mni_file = subj_seeg_dir / config_analysis["Paths"]["mni_file"]
 
@@ -550,12 +611,9 @@ def _load_pat_coords(subj, subj_seeg_dir, bip_lut):
         pd.DataFrame: A DataFrame containing electrode coordinates with columns ['Contact', 'X', 'Y', 'Z'].
     """
 
-    config_f = "/config/default.yaml"
-    config = load_yaml(config_f)
+    config = load_yaml()
 
-    coords_file = subj_seeg_dir / config["Paths"]["subj_coords_file"].replace(
-        "$SUBJ", subj
-    )
+    coords_file = subj_seeg_dir / config["Paths"]["subj_coords_file"].replace("$SUBJ", subj)
     if coords_file.is_file():
         coords = np.loadtxt(coords_file, skiprows=1)
     else:
@@ -567,9 +625,7 @@ def _load_pat_coords(subj, subj_seeg_dir, bip_lut):
             logger.error(f"Could not find coords_registered.csv file for {subj}")
             return pd.DataFrame()
 
-    contact_file = Path(
-        str(coords_file).replace("coords_registered", "raw_contact_names")
-    )
+    contact_file = Path(str(coords_file).replace("coords_registered", "raw_contact_names"))
     contacts = pd.read_csv(contact_file, header=None, names=["Long", "Num"])
     contacts["Long"] = contacts["Long"].str.replace(" ", "")
     contacts["Short"] = contacts["Long"].map(dict(zip(bip_lut.Long, bip_lut.Short)))

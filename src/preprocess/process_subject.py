@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime
 from loguru import logger
 
-from process import gather_data
+from src.preprocess.process import build_subject_pt
 
 
 def main():
@@ -47,9 +47,9 @@ def main():
 
     logger.info(f"Creating .pt file for subject: {subj}")
     logger.info(f"Parameters in default.yaml are set as follows:")
-    logger.info(open("default.yaml").read())
+    logger.info(open("../config/default.yaml").read())
 
-    success = gather_data(subj)
+    success = build_subject_pt(subj)
 
     if success:
         logger.success(f".pt file for subject {subj} created successfully.")
