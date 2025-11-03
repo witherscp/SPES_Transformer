@@ -13,32 +13,34 @@ def load_yaml(yaml_f):
     return config
 
 
-def get_subj_seeg_dir(subj):
+def get_subj_path(subj, path="subj_seeg_path"):
     """
-    Load the subject's SEEG directory for a given patient.
+    Load the subject's directory for a given patient.
 
     Args:
         subj (str): The name of the patient.
+        path (str): The key in the config file specifying the desired path type.
 
     Returns:
-        Path: The subject's SEEG directory.
+        Path: The subject's directory.
     """
 
     config_f = "/config/default.yaml"
     config = load_yaml(config_f)
 
-    subj_seeg_dir = Path(config["paths"]["subj_seeg_dir"].replace("SUBJ", subj))
-    if subj_seeg_dir.is_dir() == False:
-        possible_dirs = list(subj_seeg_dir.parent.glob(f"{subj}*"))
+    subj_dir = Path(config["Paths"][path].replace("$SUBJ", subj))
+
+    if subj_dir.is_dir() == False:
+        possible_dirs = list(subj_dir.parent.glob(f"{subj}*"))
         if len(possible_dirs) == 1:
-            subj_seeg_dir = possible_dirs[0]
-            logger.warning(f"Using {subj_seeg_dir} for patient {subj}")
+            subj_dir = possible_dirs[0]
+            logger.warning(f"Using {subj_dir} for patient {subj}")
         else:
             logger.error(
-                f"No {subj_seeg_dir} found for patient {subj} and possible directories: {possible_dirs}"
+                f"No {subj_dir} found for patient {subj} and possible directories: {possible_dirs}"
             )
 
-    return subj_seeg_dir
+    return subj_dir
 
 
 def load_roi_assignments(subj, subj_seeg_dir):
@@ -55,7 +57,8 @@ def load_roi_assignments(subj, subj_seeg_dir):
 
     config_f = "/config/default.yaml"
     config = load_yaml(config_f)
-    roi_df_path = subj_seeg_dir / config["paths"]["roi_assignments_file"]
+    roi_df_path = subj_seeg_dir / config["Paths"]["roi_assignments_file"]
+
     try:
         roi_df = pd.read_csv(roi_df_path)
     except FileNotFoundError:
@@ -87,7 +90,7 @@ def get_dks_region_dict(subj):
         dict: Mapping of channel names to DKS region names for given patient
     """
 
-    subj_seeg_dir = get_subj_seeg_dir(subj)
+    subj_seeg_dir = get_subj_path(subj, path="subj_seeg_path")
 
     # ---------------- Load ROI assignments ----------------
     roi_df = load_roi_assignments(subj, subj_seeg_dir)
@@ -243,12 +246,12 @@ def get_soz_label_dict(subj, IZ_as_NIZ=True):
     config = load_yaml(config_f)
 
     soz_labels_df = pd.read_csv(
-        config["paths"]["soz_labels"], names=["Patient", "Bipole", "Label"]
+        config["Paths"]["soz_labels_fpath"], names=["Patient", "Bipole", "Label"]
     )
     pat_labels = soz_labels_df[soz_labels_df.Patient == subj]
     if pat_labels.empty:
         logger.error(
-            f"{subj} not found in SOZ labels file: {config['paths']['soz_labels']}"
+            f"{subj} not found in SOZ labels file: {config['Paths']['soz_labels_fpath']}"
         )
         return {}
 
@@ -345,7 +348,7 @@ def _load_bip_lut(subj, subj_seeg_dir):
     config_f = "/config/default.yaml"
     config = load_yaml(config_f)
 
-    bip_lut_path = subj_seeg_dir / config["paths"]["subj_bip_lut_file"].replace(
+    bip_lut_path = subj_seeg_dir / config["Paths"]["subj_bip_lut_file"].replace(
         "SUBJ", subj
     )
     bip_lut = pd.read_csv(bip_lut_path, names=["Long", "Short"])
@@ -421,8 +424,8 @@ def _load_mni_affine(subj):
 
     config_f = "/config/default.yaml"
     config_analysis = load_yaml(config_f)
-    subj_seeg_dir = get_subj_seeg_dir(subj)
-    mni_file = subj_seeg_dir / config_analysis["paths"]["mni_file"]
+    subj_seeg_dir = get_subj_path(subj, path="subj_seeg_path")
+    mni_file = subj_seeg_dir / config_analysis["Paths"]["mni_file"]
 
     mni_img = nib.load(mni_file)
     mni_affine = mni_img.affine
@@ -479,7 +482,7 @@ def _get_patient_coords(subj):
         pd.DataFrame: A DataFrame containing electrode coordinates with columns ['Contact', 'X', 'Y', 'Z'].
     """
 
-    subj_seeg_dir = get_subj_seeg_dir(subj)
+    subj_seeg_dir = get_subj_path(subj, path="subj_seeg_path")
 
     roi_df = load_roi_assignments(subj, subj_seeg_dir)
     if roi_df.empty:
@@ -550,7 +553,7 @@ def _load_pat_coords(subj, subj_seeg_dir, bip_lut):
     config_f = "/config/default.yaml"
     config = load_yaml(config_f)
 
-    coords_file = subj_seeg_dir / config["paths"]["subj_coords_file"].replace(
+    coords_file = subj_seeg_dir / config["Paths"]["subj_coords_file"].replace(
         "SUBJ", subj
     )
     if coords_file.is_file():
