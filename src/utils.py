@@ -349,7 +349,7 @@ def _load_bip_lut(subj, subj_seeg_dir):
     config = load_yaml(config_f)
 
     bip_lut_path = subj_seeg_dir / config["Paths"]["subj_bip_lut_file"].replace(
-        "SUBJ", subj
+        "$SUBJ", subj
     )
     bip_lut = pd.read_csv(bip_lut_path, names=["Long", "Short"])
     return bip_lut
@@ -554,7 +554,7 @@ def _load_pat_coords(subj, subj_seeg_dir, bip_lut):
     config = load_yaml(config_f)
 
     coords_file = subj_seeg_dir / config["Paths"]["subj_coords_file"].replace(
-        "SUBJ", subj
+        "$SUBJ", subj
     )
     if coords_file.is_file():
         coords = np.loadtxt(coords_file, skiprows=1)
