@@ -7,7 +7,7 @@ Paths:
   soz_labels_fpath: "/mnt/ernie_main/000_Data/SEEG/SEEG_EyesClosed_RestingState/labels/all_pats_bipole_soz_labels.csv"
 
   # Folder names
-  subj_pulse_dir: "$SUBJ_CCEP_new_single_pulses_bipole"
+  subj_pulse_dir: "$SUBJ_CCEP_single_pulses_bipole"
   
   # File names
   subj_bip_lut_file: '$SUBJ_crave_edf_LUT.csv'
