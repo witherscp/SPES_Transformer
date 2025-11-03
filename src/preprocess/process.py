@@ -75,7 +75,7 @@ def build_subject_pt(subj):
     }
 
     data_dir = Path("../../data/processed")
-    torch.save(data, data_dir / f"{subj}_data.pt")
+    torch.save(data, data_dir / f"{subj}.pt")
     return True
 
 
