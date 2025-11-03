@@ -1,0 +1,5 @@
+Paths:
+  subj_preproc_path: "/mnt/ernie_main/000_Data/SPES/data/preprocessed/$SUBJ"
+  subj_pulse_dir: "$SUBJ_CCEP_single_pulses_bipole"
+
+
