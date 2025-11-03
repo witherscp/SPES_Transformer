@@ -13,12 +13,12 @@ def load_yaml(yaml_f):
     return config
 
 
-def get_subj_seeg_dir(pat_name):
+def get_subj_seeg_dir(subj):
     """
     Load the subject's SEEG directory for a given patient.
 
     Args:
-        pat_name (str): The name of the patient.
+        subj (str): The name of the patient.
 
     Returns:
         Path: The subject's SEEG directory.
@@ -27,26 +27,26 @@ def get_subj_seeg_dir(pat_name):
     config_f = "/config/default.yaml"
     config = load_yaml(config_f)
 
-    subj_seeg_dir = Path(config["paths"]["subj_seeg_dir"].replace("SUBJ", pat_name))
+    subj_seeg_dir = Path(config["paths"]["subj_seeg_dir"].replace("SUBJ", subj))
     if subj_seeg_dir.is_dir() == False:
-        possible_dirs = list(subj_seeg_dir.parent.glob(f"{pat_name}*"))
+        possible_dirs = list(subj_seeg_dir.parent.glob(f"{subj}*"))
         if len(possible_dirs) == 1:
             subj_seeg_dir = possible_dirs[0]
-            logger.warning(f"Using {subj_seeg_dir} for patient {pat_name}")
+            logger.warning(f"Using {subj_seeg_dir} for patient {subj}")
         else:
             logger.error(
-                f"No {subj_seeg_dir} found for patient {pat_name} and possible directories: {possible_dirs}"
+                f"No {subj_seeg_dir} found for patient {subj} and possible directories: {possible_dirs}"
             )
 
     return subj_seeg_dir
 
 
-def load_roi_assignments(pat_name, subj_seeg_dir):
+def load_roi_assignments(subj, subj_seeg_dir):
     """
     Load the ROI (Region of Interest) assignments for a given patient.
 
     Args:
-        pat_name (str): The name of the patient.
+        subj (str): The name of the patient.
         subj_seeg_dir (Path): The subject's SEEG directory from get_subj_seeg_dir(subj).
 
     Returns:
@@ -64,7 +64,7 @@ def load_roi_assignments(pat_name, subj_seeg_dir):
             roi_df = pd.read_csv(roi_df_path)
         except FileNotFoundError:
             logger.error(
-                f"Could not find ROI assignments file for {pat_name} at {roi_df_path} or {config['paths']['roi_assignments_file']}"
+                f"Could not find ROI assignments file for {subj} at {roi_df_path} or {config['paths']['roi_assignments_file']}"
             )
             return pd.DataFrame()
 
@@ -76,26 +76,26 @@ def load_roi_assignments(pat_name, subj_seeg_dir):
 
 @lru_cache(maxsize=None)
 @logger.catch
-def get_dks_region_dict(pat_name):
+def get_dks_region_dict(subj):
     """
     Get a dictionary mapping channel names (ex: LTP1-LTP2) to DKS region names for a given patient.
 
     Args:
-        pat_name (str): Patient identifier to load the appropriate configuration and data files.
+        subj (str): Patient identifier to load the appropriate configuration and data files.
 
     Returns:
         dict: Mapping of channel names to DKS region names for given patient
     """
 
-    subj_seeg_dir = get_subj_seeg_dir(pat_name)
+    subj_seeg_dir = get_subj_seeg_dir(subj)
 
     # ---------------- Load ROI assignments ----------------
-    roi_df = load_roi_assignments(pat_name, subj_seeg_dir)
+    roi_df = load_roi_assignments(subj, subj_seeg_dir)
     if roi_df.empty:
         return {}
 
     # ---------------- Load Bipolar lookup table ----------------
-    bip_lut = _load_bip_lut(pat_name, subj_seeg_dir)
+    bip_lut = _load_bip_lut(subj, subj_seeg_dir)
 
     # ---------------- Add short labels to ROI df ----------------
     roi_df = _add_short_label_to_roi_df(roi_df, bip_lut)
@@ -104,29 +104,29 @@ def get_dks_region_dict(pat_name):
     pat_mapping_dict = dict(zip(roi_df["Short Bip Label"], roi_df["DKS Region Name"]))
 
     logger.success(
-        f"Built DKS region dict for {pat_name} with {len(pat_mapping_dict)} channels (cached)"
+        f"Built DKS region dict for {subj} with {len(pat_mapping_dict)} channels (cached)"
     )
     return pat_mapping_dict
 
 
 @lru_cache(maxsize=None)
 @logger.catch
-def get_dks_broad_region_dict(pat_name):
+def get_dks_broad_region_dict(subj):
     """
     Get a dictionary mapping channel names (ex: LTP1-LTP2) to broader brain region categories for a given patient.
 
     Args:
-        pat_name (str): Patient identifier to load the appropriate configuration and data files.
+        subj (str): Patient identifier to load the appropriate configuration and data files.
 
     Returns:
         dict: Mapping of channel names to broader brain region categories for given patient
     """
-    dks_region_dict = get_dks_region_dict(pat_name)
+    dks_region_dict = get_dks_region_dict(subj)
     broad_region_dict = {
         chan: dks_to_broad_region(region) for chan, region in dks_region_dict.items()
     }
     logger.success(
-        f"Built broad region dict for {pat_name} with {len(broad_region_dict)} channels (cached)"
+        f"Built broad region dict for {subj} with {len(broad_region_dict)} channels (cached)"
     )
     return broad_region_dict
 
@@ -227,12 +227,12 @@ def dks_to_broad_region(dks_region_inp):
 
 @lru_cache(maxsize=None)
 @logger.catch
-def get_soz_label_dict(pat_name, IZ_as_NIZ=True):
+def get_soz_label_dict(subj, IZ_as_NIZ=True):
     """
     Get a dictionary mapping channel names (ex: LTP1-LTP2) to their corresponding SOZ labels for a given patient.
 
     Args:
-        pat_name (str): Patient identifier to locate the appropriate stimulus files.
+        subj (str): Patient identifier to locate the appropriate stimulus files.
         IZ_as_NIZ (bool): If True, reclassify 'IZ' labels as 'NIZ'. Default is True.
 
     Returns:
@@ -245,10 +245,10 @@ def get_soz_label_dict(pat_name, IZ_as_NIZ=True):
     soz_labels_df = pd.read_csv(
         config["paths"]["soz_labels"], names=["Patient", "Bipole", "Label"]
     )
-    pat_labels = soz_labels_df[soz_labels_df.Patient == pat_name]
+    pat_labels = soz_labels_df[soz_labels_df.Patient == subj]
     if pat_labels.empty:
         logger.error(
-            f"{pat_name} not found in SOZ labels file: {config['paths']['soz_labels']}"
+            f"{subj} not found in SOZ labels file: {config['paths']['soz_labels']}"
         )
         return {}
 
@@ -263,7 +263,7 @@ def get_soz_label_dict(pat_name, IZ_as_NIZ=True):
     soz_label_dict = pat_labels.set_index("Bipole")["Label"].to_dict()
 
     logger.success(
-        f"Built SOZ label dict for {pat_name} with {len(soz_label_dict)} channels (cached)"
+        f"Built SOZ label dict for {subj} with {len(soz_label_dict)} channels (cached)"
     )
 
     return soz_label_dict
@@ -282,20 +282,20 @@ def map_label(label):
             return "IZ"
 
 
-def get_mni_coords(pat_name):
+def get_mni_coords(subj):
     """
     Load the MNI electrode coordinates for a given patient.
     Args:
-        pat_name (str): Patient identifier to locate the appropriate coordinate file.
+        subj (str): Patient identifier to locate the appropriate coordinate file.
     Returns:
         pd.DataFrame: A DataFrame containing electrode MNI coordinates with columns ['Contact', 'X', 'Y', 'Z'].
     """
 
-    coords_df = _get_patient_coords(pat_name)
+    coords_df = _get_patient_coords(subj)
     if coords_df.empty:
         return pd.DataFrame()
 
-    mni_affine = _load_mni_affine(pat_name)
+    mni_affine = _load_mni_affine(subj)
     if mni_affine is None:
         return pd.DataFrame()
 
@@ -332,12 +332,12 @@ def calc_euc_distance(coords_df, chan1, chan2):
     return np.linalg.norm(p1 - p2)
 
 
-def _load_bip_lut(pat_name, subj_seeg_dir):
+def _load_bip_lut(subj, subj_seeg_dir):
     """
     Load the bipolar lookup table for a given patient.
 
     Args:
-        pat_name (str): The name of the patient.
+        subj (str): The name of the patient.
         subj_seeg_dir (Path): The subject's SEEG directory from get_subj_seeg_dir(subj).
     Returns:
         pd.DataFrame: A DataFrame containing the bipolar lookup table with columns ['Long', 'Short'].
@@ -346,7 +346,7 @@ def _load_bip_lut(pat_name, subj_seeg_dir):
     config = load_yaml(config_f)
 
     bip_lut_path = subj_seeg_dir / config["paths"]["subj_bip_lut_file"].replace(
-        "SUBJ", pat_name
+        "SUBJ", subj
     )
     bip_lut = pd.read_csv(bip_lut_path, names=["Long", "Short"])
     return bip_lut
@@ -391,12 +391,12 @@ def _add_short_label_to_roi_df(roi_df, bip_lut):
     return roi_df
 
 
-def _load_mni_affine(pat_name):
+def _load_mni_affine(subj):
     """
     Load the MNI affine transformation matrix for a given patient.
 
     Args:
-        pat_name (str): Patient identifier to locate the appropriate affine file.
+        subj (str): Patient identifier to locate the appropriate affine file.
 
     Returns:
         np.ndarray: The MNI affine transformation matrix with shape (4, 4).
@@ -421,7 +421,7 @@ def _load_mni_affine(pat_name):
 
     config_f = "/config/default.yaml"
     config_analysis = load_yaml(config_f)
-    subj_seeg_dir = get_subj_seeg_dir(pat_name)
+    subj_seeg_dir = get_subj_seeg_dir(subj)
     mni_file = subj_seeg_dir / config_analysis["paths"]["mni_file"]
 
     mni_img = nib.load(mni_file)
@@ -469,26 +469,26 @@ def _split_contacts_safe(bip_label):
         return pd.Series([np.nan, np.nan])
 
 
-def _get_patient_coords(pat_name):
+def _get_patient_coords(subj):
     """
     Load the electrode coordinates for a given patient. Coordinates have been registered to MNI voxel space.
 
     Args:
-        pat_name (str): Patient identifier to locate the appropriate coordinate file.
+        subj (str): Patient identifier to locate the appropriate coordinate file.
     Returns:
         pd.DataFrame: A DataFrame containing electrode coordinates with columns ['Contact', 'X', 'Y', 'Z'].
     """
 
-    subj_seeg_dir = get_subj_seeg_dir(pat_name)
+    subj_seeg_dir = get_subj_seeg_dir(subj)
 
-    roi_df = load_roi_assignments(pat_name, subj_seeg_dir)
+    roi_df = load_roi_assignments(subj, subj_seeg_dir)
     if roi_df.empty:
         return pd.DataFrame()
 
-    bip_lut = _load_bip_lut(pat_name, subj_seeg_dir)
+    bip_lut = _load_bip_lut(subj, subj_seeg_dir)
     roi_df = _add_short_label_to_roi_df(roi_df, bip_lut)
 
-    coords_df = _load_pat_coords(pat_name, subj_seeg_dir, bip_lut)
+    coords_df = _load_pat_coords(subj, subj_seeg_dir, bip_lut)
     if coords_df.empty:
         return pd.DataFrame()
 
@@ -536,11 +536,11 @@ def _compute_bipole_coords(coords_df, roi_df):
     return bipole_coords_df
 
 
-def _load_pat_coords(pat_name, subj_seeg_dir, bip_lut):
+def _load_pat_coords(subj, subj_seeg_dir, bip_lut):
     """Load the electrode coordinates for a given patient (DO NOT call this function directly, use get_patient_coords).
 
     Args:
-        pat_name (str): The name of the patient.
+        subj (str): The name of the patient.
         subj_seeg_dir (Path): The subject's SEEG directory.
 
     Returns:
@@ -551,17 +551,17 @@ def _load_pat_coords(pat_name, subj_seeg_dir, bip_lut):
     config = load_yaml(config_f)
 
     coords_file = subj_seeg_dir / config["paths"]["subj_coords_file"].replace(
-        "SUBJ", pat_name
+        "SUBJ", subj
     )
     if coords_file.is_file():
         coords = np.loadtxt(coords_file, skiprows=1)
     else:
-        glob_search = list(subj_seeg_dir.glob(f"{pat_name}_*_coords_registered.csv"))
+        glob_search = list(subj_seeg_dir.glob(f"{subj}_*_coords_registered.csv"))
         if len(glob_search) == 1:
             coords_file = glob_search[0]
             coords = np.loadtxt(coords_file, skiprows=1)
         else:
-            logger.error(f"Could not find coords_registered.csv file for {pat_name}")
+            logger.error(f"Could not find coords_registered.csv file for {subj}")
             return pd.DataFrame()
 
     contact_file = Path(
