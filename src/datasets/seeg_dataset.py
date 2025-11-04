@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset
 from pathlib import Path
 from loguru import logger
+import numpy as np
 
 
 class SEEGDataset(Dataset):
@@ -22,27 +23,107 @@ class SEEGDataset(Dataset):
         if subjects is None:
             subjects = [f.stem for f in data_dir.glob("*.pt")]
 
+        max_stims, max_responses, max_trials = 0, 0, 0
         for subj in subjects:
             path = data_dir / f"{subj}.pt"
             subj_data = torch.load(path, weights_only=False)
 
             # Each subject may have multiple electrodes (targets)
             n_targets = len(subj_data["targets"])
+            conv_currents = subj_data["convergent"]["stim_trial_currents"]  # [n_stims, n_trials]
 
             for t in range(n_targets):
                 x_conv = subj_data["convergent"]["data"][t]  # e.g., [n_stims, n_trials, n_times]
                 x_div = subj_data["divergent"]["data"][t]  # e.g., [n_responses, n_trials, n_times]
                 y = subj_data["target_labels"][t]
 
+                # reshape div_currents to [n_responses, n_trials]
+                div_currents = subj_data["divergent"]["target_trial_currents"][t]  # [n_trials]
+                div_currents = torch.tile(
+                    div_currents, dims=(x_div.shape[0], 1)
+                )  # [n_responses, n_trials]
+
+                max_stims = max(max_stims, x_conv.shape[0])
+                max_responses = max(max_responses, x_div.shape[0])
+                max_trials = max(
+                    max_trials, x_conv.shape[1]
+                )  # assuming conv and div have same n_trials
+
                 sample = {
                     "subject": subj,
                     "target_idx": t,
                     "convergent": x_conv,
                     "divergent": x_div,
+                    "convergent_currents": conv_currents,
+                    "divergent_currents": div_currents,
                     "label": y,
                 }
 
                 self.data.append(sample)
+
+        for sample in self.data:
+            # Now apply padding to all samples to have uniform sizes
+            # pads last dimension before and after by 0,0
+            # pads 2nd dimension (n_trials) by 0 before and (max_trials - current) after
+            # pads 1st dimension (n_stims or n_responses) by 0 before and (max_stims - current) or (max_responses - current) after
+            sample["divergent"] = torch.nn.functional.pad(
+                sample["divergent"],
+                (
+                    0,
+                    0,
+                    0,
+                    max_trials - sample["divergent"].shape[1],
+                    0,
+                    max_responses - sample["divergent"].shape[0],
+                ),
+                value=np.nan,
+            )
+            sample["convergent"] = torch.nn.functional.pad(
+                sample["convergent"],
+                (
+                    0,
+                    0,
+                    0,
+                    max_trials - sample["convergent"].shape[1],
+                    0,
+                    max_stims - sample["convergent"].shape[0],
+                ),
+                value=np.nan,
+            )
+            sample["divergent_currents"] = torch.nn.functional.pad(
+                sample["divergent_currents"],
+                (
+                    0,
+                    max_trials - sample["divergent_currents"].shape[1],
+                    0,
+                    max_responses - sample["divergent_currents"].shape[0],
+                ),
+                value=0,
+            )
+            sample["convergent_currents"] = torch.nn.functional.pad(
+                sample["convergent_currents"],
+                (
+                    0,
+                    max_trials - sample["convergent_currents"].shape[1],
+                    0,
+                    max_stims - sample["convergent_currents"].shape[0],
+                ),
+                value=0,
+            )
+
+            # Create padding masks
+            sample["convergent_mask"] = torch.isnan(sample["convergent"]).all(
+                dim=-1
+            )  # [n_stims, n_trials]
+            sample["divergent_mask"] = torch.isnan(sample["divergent"]).all(
+                dim=-1
+            )  # [n_responses, n_trials]
+
+            # Replace nan with zeros for model input
+            sample["convergent"] = torch.nan_to_num(sample["convergent"], nan=0)
+            sample["divergent"] = torch.nan_to_num(sample["divergent"], nan=0)
+            sample["convergent_currents"] = torch.nan_to_num(sample["convergent_currents"], nan=0)
+            sample["divergent_currents"] = torch.nan_to_num(sample["divergent_currents"], nan=0)
 
         logger.success(f"✅ Loaded {len(self.data)} total samples from {len(subjects)} subjects.")
 
@@ -52,7 +133,14 @@ class SEEGDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.data[idx]
 
-        x = {"convergent": sample["convergent"], "divergent": sample["divergent"]}
+        x = {
+            "convergent": sample["convergent"],
+            "divergent": sample["divergent"],
+            "convergent_mask": sample["convergent_mask"],
+            "divergent_mask": sample["divergent_mask"],
+            "convergent_currents": sample["convergent_currents"],
+            "divergent_currents": sample["divergent_currents"],
+        }
         y = sample["label"]
 
         # if self.transform:
