@@ -6,39 +6,58 @@ import torch.nn.functional as F
 from src.models.multi_scale_ori import MSResNet
 
 
-# ---------- Helper: standard transformer encoder block ----------
 class TransformerBlock(nn.Module):
-    def __init__(self, dim, n_heads=4, dropout=0.1):
+    def __init__(self, dim, n_heads=4, dropout=0.1, attn_dropout=0.1, resid_scale=0.5):
         super().__init__()
-        self.attn = nn.MultiheadAttention(embed_dim=dim, num_heads=n_heads, batch_first=True)
-        self.ff = nn.Sequential(
-            nn.Linear(dim, dim * 4), nn.ReLU(), nn.Linear(dim * 4, dim), nn.Dropout(dropout)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=dim, num_heads=n_heads, batch_first=True, dropout=attn_dropout
         )
+        self.attn_drop = nn.Dropout(attn_dropout)
+
+        self.ff = nn.Sequential(
+            nn.Linear(dim, dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim * 4, dim),
+            nn.Dropout(dropout),
+        )
+
+        self.pre_norm = nn.LayerNorm(dim)
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
 
-    def forward(self, x, key_padding_mask=None):
+        # Residual scaling (helps prevent blow-ups; small, learnable gain)
+        self.resid_scale1 = nn.Parameter(torch.tensor(resid_scale))
+        self.resid_scale2 = nn.Parameter(torch.tensor(resid_scale))
 
+    def forward(self, x, key_padding_mask=None):
         if key_padding_mask is not None:
             mask = key_padding_mask.unsqueeze(-1)
             x = x.masked_fill(mask, 0.0)
 
-        attn_out, _ = self.attn(x, x, x, key_padding_mask=key_padding_mask)
+        # pre-norm + bound for stability
+        x_norm = torch.tanh(self.pre_norm(x))
 
-        # sanitize masked query outputs
+        attn_out, _ = self.attn(
+            x_norm, x_norm, x_norm, key_padding_mask=key_padding_mask, need_weights=False
+        )
+        attn_out = self.attn_drop(torch.nan_to_num(attn_out))
+
         if key_padding_mask is not None:
-            attn_out = torch.where(mask, torch.zeros_like(attn_out), torch.nan_to_num(attn_out))
+            attn_out = torch.where(mask, torch.zeros_like(attn_out), attn_out)
 
-        x = self.norm1(x + attn_out)
+        x = self.norm1(x_norm + self.resid_scale1 * attn_out)
+
         ff_out = self.ff(x)
-
         if key_padding_mask is not None:
             ff_out = ff_out.masked_fill(mask, 0.0)
 
-        x = self.norm2(x + ff_out)
+        x = self.norm2(x + self.resid_scale2 * ff_out)
 
         if key_padding_mask is not None:
             x = x.masked_fill(mask, 0.0)
+
+        x = torch.nan_to_num(x)
 
         return x
 
@@ -73,8 +92,9 @@ class SEEGTransformer(nn.Module):
         # Cross-channel self-attention
         self.cross_channel = TransformerBlock(embed_dim, n_heads=n_heads)
 
-        # CLS token for summarization
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        # CLS tokens for summarization
+        self.cls_token1 = nn.Parameter(nn.init.xavier_normal_(torch.empty(1, 1, embed_dim)))
+        self.cls_token2 = nn.Parameter(nn.init.xavier_normal_(torch.empty(1, 1, embed_dim)))
 
         # # Position embeddings (optional)
         # self.pos_embed_trials = nn.Parameter(torch.randn(1, n_trials + 1, embed_dim))
@@ -93,12 +113,13 @@ class SEEGTransformer(nn.Module):
         x = x.view(B * n_electrodes, n_trials, n_features)
 
         # include CLS token
-        cls_token = self.cls_token.expand(B * n_electrodes, -1, -1)
-        trial_seq = torch.cat([cls_token, x], dim=1)
+        cls_token1 = self.cls_token1.expand(B * n_electrodes, -1, -1)
+        trial_seq = torch.cat([cls_token1, x], dim=1)
 
         # update padding mask to account for cls token and shape change
         if key_padding_mask is not None:
             key_padding_mask = key_padding_mask.view(B * n_electrodes, -1)
+            # the CLS token is masked for electrodes with all trials masked
             key_padding_mask = torch.cat(
                 [torch.unsqueeze(key_padding_mask[:, 0], -1), key_padding_mask], dim=1
             )
@@ -108,15 +129,20 @@ class SEEGTransformer(nn.Module):
 
         # ---- Step 2: Cross-channel attention (across electrodes) ----
         electrode_emb = electrode_emb.view(B, n_electrodes, -1)
-        cls_token2 = self.cls_token.expand(B, -1, -1)
+        cls_token2 = self.cls_token2.expand(B, -1, -1)
         channel_seq = torch.cat([cls_token2, electrode_emb], dim=1)
 
         # channel_seq = channel_seq + self.pos_embed_channels[:, : channel_seq.size(1)]
 
         if key_padding_mask is not None:
             key_padding_mask = key_padding_mask[:, 0].view(B, n_electrodes)
+            # the CLS token is never masked
             key_padding_mask = torch.cat(
-                [torch.unsqueeze(key_padding_mask[:, 0], -1), key_padding_mask], dim=1
+                [
+                    torch.full((key_padding_mask.shape[0], 1), False, dtype=torch.bool),
+                    key_padding_mask,
+                ],
+                dim=1,
             )
 
         channel_seq = self.cross_channel(channel_seq, key_padding_mask=key_padding_mask)
@@ -164,6 +190,16 @@ class SEEGFusionModel(nn.Module):
         # Create embeddings through MSResNet
         resnet_conv_output = self.conv_msresnet(resnet_conv_input)
         resnet_div_output = self.div_msresnet(resnet_div_input)
+
+        # TODO: remove debugging once I fix large min/max issue
+        print(
+            "resnet_conv_output: mean {:.3e}, std {:.3e}, min {:.3e}, max {:.3e}".format(
+                resnet_conv_output.mean().item(),
+                resnet_conv_output.std().item(),
+                resnet_conv_output.min().item(),
+                resnet_conv_output.max().item(),
+            )
+        )
 
         # Reshape back to [B, n_electrodes, n_trials, input_dim]
         conv_embeddings = torch.zeros(
