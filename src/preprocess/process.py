@@ -12,11 +12,12 @@ from src.utils import (
     get_soz_label_dict,
     get_mni_coords_dict,
     loadmat,
+    calc_euc_distance,
 )
 
 
 @logger.catch
-def build_subject_pt(subj):
+def build_subject_pt(subj, **kwargs):
     """
     Dummy implementation of build_subject_pt function.
     In actual implementation, this function would process .mat files
@@ -46,6 +47,9 @@ def build_subject_pt(subj):
     data_dict = combine_pulses(
         pulse_paths=pulse_paths,
         possible_targets=soz_label_dict.keys(),  # most restrictive set of electrodes (must know for electrode to be target)
+        dist_threshold=kwargs["Parameters"][
+            "dist_threshold"
+        ],  # only consider electrodes greater than 20mm from stim
     )
 
     ## ------ Save processed data as .pt file ------
@@ -79,12 +83,15 @@ def build_subject_pt(subj):
     return True
 
 
-def combine_pulses(pulse_paths, possible_targets):
+def combine_pulses(pulse_paths, possible_targets, dist_threshold=20):
     """
     Combine convergent and divergent pulse data from multiple .mat files.
     Args:
         pulse_paths (list of str): List of paths to .mat pulse files.
         possible_targets (list of str): List of possible target electrode names.
+        dist_threshold (float): Minimum distance (in mm) between stim and target electrodes
+            for inclusion. Default is 20mm.
+
     Returns:
         dict: A dictionary with keys 'convergent', 'divergent', and 'targets'.
             'convergent' contains keys:
@@ -97,6 +104,9 @@ def combine_pulses(pulse_paths, possible_targets):
                 - target_trial_currents: np.array [n_targets, n_trials]
             targets: np.array [n_targets]
     """
+
+    # get subject name for later use
+    subj = pulse_paths[0].name.split("_")[0]
 
     # get stimulated electrodes from all files
     stims_lst = [path.name.split("_")[1] for path in pulse_paths]
@@ -141,6 +151,7 @@ def combine_pulses(pulse_paths, possible_targets):
     for stim_i, stim in tqdm(enumerate(unique_stims), total=n_stims):
         logger.info(f"Working on stim electrode - {stim}")
         stim_paths = [path for path in pulse_paths if f"_{stim}_" in path.name]
+        dists_stim_to_targets = np.array([calc_euc_distance(subj, stim, t) for t in targets])
 
         trial_idx = -1
         for pulse_path in stim_paths:
@@ -166,25 +177,35 @@ def combine_pulses(pulse_paths, possible_targets):
                 trial_idx += 1
 
             # Extract convergent data
-            target_indices = np.isin(targets, labels)
-            label_indices = np.array([np.where(labels == t)[0][0] for t in targets if t in labels])
-            convergent["data"][target_indices, stim_i, trial_idx, :] = pulse[label_indices, :]
+            target_mask = np.isin(targets, labels)
+            dist_mask = (
+                dists_stim_to_targets >= dist_threshold
+            )  # only consider targets greater than 20mm from stim
+            selection_mask = target_mask & dist_mask
+            label_indices = np.array([np.where(labels == t)[0][0] for t in targets[selection_mask]])
+            convergent["data"][selection_mask, stim_i, trial_idx, :] = pulse[label_indices, :]
             convergent["stim_trial_currents"][stim_i, trial_idx] = current
 
             # Extract divergent data
             if stim in targets:
+                dists_stim_to_responses = np.array(
+                    [calc_euc_distance(subj, stim, r) for r in response_names]
+                )
+                response_mask = (
+                    dists_stim_to_responses >= dist_threshold
+                )  # only consider responses greater than 20mm from stim
                 target_idx = np.where(targets == stim)[0][0]
-                divergent["data"][target_idx, :, trial_idx, :] = pulse
+                divergent["data"][target_idx, response_mask, trial_idx, :] = pulse[response_mask, :]
                 divergent["target_trial_currents"][target_idx, trial_idx] = current
 
-    # Check for nan entries which suggests error in logic
-    if np.sum(np.isnan(convergent["data"][:, :, 0, 0])):
+    # Check if a target has no convergent responses or no divergent responses
+    if np.any(np.all(np.isnan(convergent["data"][:, :, 0, 0]), axis=1)):
         logger.error(
-            "Something went wrong filling in convergent array. Check logic in debugging mode!"
+            "Targets are present that have no convergent responses (likely due to distance threshold). Need to implement removal!"
         )
-    elif np.sum(np.isnan(divergent["data"][:, :, 0, 0])):
+    elif np.any(np.all(np.isnan(divergent["data"][:, :, 0, 0]), axis=1)):
         logger.error(
-            "Something went wrong filling in divergent array. Check logic in debugging mode!"
+            "Targets are present that have no divergent responses (likely due to distance threshold). Need to implement removal!"
         )
 
     out_dict = {"convergent": convergent, "divergent": divergent, "targets": targets}

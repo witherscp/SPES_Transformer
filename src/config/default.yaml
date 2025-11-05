@@ -16,4 +16,6 @@ Paths:
   mni_file: 'mni.nii'
 
 Parameters:
+  # Preprocessing
+  dist_threshold: 20  # Minimum distance (in mm) between stim and recording electrodes for inclusion
 

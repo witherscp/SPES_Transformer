@@ -366,11 +366,8 @@ def get_mni_coords_dict(subj):
     coords_pat = coords_df[["X", "Y", "Z"]].to_numpy()
     coords_mni = _transform_to_mni(coords_pat, mni_affine)
 
-    mni_coords_df = pd.DataFrame(coords_mni, columns=["X", "Y", "Z"])
-    mni_coords_df.insert(0, "Contact", coords_df["Contact"].values)
-    mni_coords_df["Coords"] = list(zip(mni_coords_df.X, mni_coords_df.Y, mni_coords_df.Z))
-
-    mni_coords_dict = mni_coords_df.set_index("Contact")["Coords"].to_dict()
+    contacts = coords_df["Contact"].to_numpy()
+    mni_coords_dict = {c: coords_mni[i] for i, c in enumerate(contacts)}
 
     logger.success(
         f"Built MNI coords dict for {subj} with {len(mni_coords_dict)} channels (cached)"
@@ -400,11 +397,11 @@ def move_to_device(obj, device):
         return obj
 
 
-def calc_euc_distance(coords_df, chan1, chan2):
-    """Calculate the Euclidean distance between two channels given their coordinates.
+def calc_euc_distance(subj, chan1, chan2):
+    """Calculate the Euclidean distance between two channels.
 
     Args:
-        coords_df (pd.DataFrame): DataFrame containing electrode coordinates with columns ['Contact', 'X', 'Y', 'Z'].
+        subj (str): The subject identifier.
         chan1 (str): The name of the first channel.
         chan2 (str): The name of the second channel.
 
@@ -412,16 +409,18 @@ def calc_euc_distance(coords_df, chan1, chan2):
         float: The Euclidean distance between the two channels.
     """
 
-    if chan1 not in coords_df["Contact"].values:
+    mni_coords_dict = get_mni_coords_dict(subj)
+
+    if chan1 not in mni_coords_dict.keys():
         logger.error(f"Channel {chan1} not found in coordinates DataFrame.")
         return np.nan
 
-    if chan2 not in coords_df["Contact"].values:
+    if chan2 not in mni_coords_dict.keys():
         logger.error(f"Channel {chan2} not found in coordinates DataFrame.")
         return np.nan
 
-    p1 = coords_df.loc[coords_df["Contact"] == chan1, ["X", "Y", "Z"]].values
-    p2 = coords_df.loc[coords_df["Contact"] == chan2, ["X", "Y", "Z"]].values
+    p1 = mni_coords_dict[chan1]
+    p2 = mni_coords_dict[chan2]
 
     return np.linalg.norm(p1 - p2)
 
