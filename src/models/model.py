@@ -83,7 +83,7 @@ class CrossAttentionFusion(nn.Module):
 
 # ---------- Core SEEG Transformer for one paradigm ----------
 class SEEGTransformer(nn.Module):
-    def __init__(self, embed_dim=128, n_heads=4):
+    def __init__(self, embed_dim=128, n_heads=4, device="cuda"):
         super().__init__()
 
         # Cross-trial self-attention
@@ -93,8 +93,12 @@ class SEEGTransformer(nn.Module):
         self.cross_channel = TransformerBlock(embed_dim, n_heads=n_heads)
 
         # CLS tokens for summarization
-        self.cls_token1 = nn.Parameter(nn.init.xavier_normal_(torch.empty(1, 1, embed_dim)))
-        self.cls_token2 = nn.Parameter(nn.init.xavier_normal_(torch.empty(1, 1, embed_dim)))
+        self.cls_token1 = nn.Parameter(nn.init.xavier_normal_(torch.empty(1, 1, embed_dim))).to(
+            device
+        )
+        self.cls_token2 = nn.Parameter(nn.init.xavier_normal_(torch.empty(1, 1, embed_dim))).to(
+            device
+        )
 
         # # Position embeddings (optional)
         # self.pos_embed_trials = nn.Parameter(torch.randn(1, n_trials + 1, embed_dim))
@@ -139,7 +143,12 @@ class SEEGTransformer(nn.Module):
             # the CLS token is never masked
             key_padding_mask = torch.cat(
                 [
-                    torch.full((key_padding_mask.shape[0], 1), False, dtype=torch.bool),
+                    torch.full(
+                        (key_padding_mask.shape[0], 1),
+                        False,
+                        dtype=torch.bool,
+                        device=channel_seq.device,
+                    ),
                     key_padding_mask,
                 ],
                 dim=1,
@@ -153,13 +162,13 @@ class SEEGTransformer(nn.Module):
 
 # ---------- Full Fusion Model ----------
 class SEEGFusionModel(nn.Module):
-    def __init__(self, embed_dim=128, n_classes=2):
+    def __init__(self, embed_dim=128, n_classes=2, device="cuda"):
         super().__init__()
 
         self.conv_msresnet = MSResNet(input_channel=1, num_classes=embed_dim, dropout_rate=0.2)
         self.div_msresnet = MSResNet(input_channel=1, num_classes=embed_dim, dropout_rate=0.2)
-        self.conv_block = SEEGTransformer(embed_dim=embed_dim, n_heads=4)
-        self.div_block = SEEGTransformer(embed_dim=embed_dim, n_heads=4)
+        self.conv_block = SEEGTransformer(embed_dim=embed_dim, n_heads=4, device=device)
+        self.div_block = SEEGTransformer(embed_dim=embed_dim, n_heads=4, device=device)
 
         self.fusion = CrossAttentionFusion(embed_dim=embed_dim, n_heads=4)
         self.classifier = nn.Sequential(
