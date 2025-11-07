@@ -8,7 +8,15 @@ from loguru import logger
 
 
 def train_model(
-    model, dataloaders, criterion, optimizer, device, save_prefix, n_epochs=50, patience=2
+    model,
+    dataloaders,
+    criterion,
+    optimizer,
+    scheduler,
+    device,
+    save_prefix,
+    n_epochs=50,
+    patience=2,
 ):
     """
     Train a model with early stopping and per-epoch checkpoint saving.
@@ -17,6 +25,7 @@ def train_model(
         dataloaders: dict with 'train' and 'val' DataLoaders
         criterion: loss function
         optimizer: optimizer
+        scheduler: learning rate scheduler
         device: torch device
         save_prefix: prefix for saving out model weights
         n_epochs: int, number of epochs
@@ -67,6 +76,7 @@ def train_model(
             # Gradient clipping
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+            scheduler.step()
 
             train_loss += loss.item() * inputs["convergent"].size(0)
             _, preds = torch.max(outputs, 1)
