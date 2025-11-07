@@ -1,55 +1,78 @@
 import torch
-from tqdm import tqdm
-from sklearn.metrics import roc_auc_score
 from src.training.train import move_to_device
 from loguru import logger
+import torch
+import numpy as np
+from sklearn.metrics import roc_auc_score, f1_score, confusion_matrix, roc_curve
 
 
 def evaluate_model(model, dataloader, criterion, device):
     """
-    Evaluate a model on test data and compute AUROC.
-    Args:
-        model: trained nn.Module
-        dataloader: DataLoader for test set
-        criterion: loss function
-        device: torch device
+    Evaluate model on a given dataset and compute loss, AUROC, F1 score, and Youden index.
+
     Returns:
-        test_loss, test_acc, test_auc
+        dict with loss, accuracy, AUROC, F1, sensitivity, specificity, Youden index
     """
     model.eval()
-    model.to(device)
-
-    test_loss = 0.0
-    correct = 0
+    running_loss = 0.0
     all_labels = []
     all_probs = []
 
     with torch.no_grad():
-        for inputs, labels in tqdm(dataloader, desc="Testing", leave=False):
+        for inputs, labels in dataloader:
             inputs = move_to_device(inputs, device)
-            labels = move_to_device(labels, device)
+            labels = labels.to(device)
 
             outputs = model(inputs)
             loss = criterion(outputs, labels)
+            running_loss += loss.item() * labels.size(0)
 
-            test_loss += loss.item() * inputs["convergent"].size(0)
+            # For probabilities and predictions
+            probs = torch.softmax(outputs, dim=1)
 
-            probs = torch.softmax(outputs, dim=1)[:, 1]  # assuming binary classification
-            _, preds = torch.max(outputs, 1)
+            all_labels.append(labels.cpu().numpy())
+            all_probs.append(
+                probs[:, 1].cpu().numpy() if probs.shape[1] > 1 else probs.cpu().numpy()
+            )
 
-            correct += torch.sum(preds == labels.data)
-            all_labels.extend(labels.cpu().numpy())
-            all_probs.extend(probs.cpu().numpy())
+    # Concatenate all batches
+    all_labels = np.concatenate(all_labels)
+    all_probs = np.concatenate(all_probs)
 
-    test_loss = test_loss / len(dataloader.dataset)
-    test_acc = correct.double() / len(dataloader.dataset)
+    # ---- Compute metrics ----
+    avg_loss = running_loss / len(dataloader.dataset)
 
+    # AUROC
     try:
-        test_auc = roc_auc_score(all_labels, all_probs)
+        auroc = roc_auc_score(all_labels, all_probs)
     except ValueError:
-        test_auc = float("nan")  # handle single-class case
+        auroc = np.nan  # e.g., if only one class present in labels
 
-    logger.info(f"\nTest Summary:")
-    logger.info(f"  Loss: {test_loss:.4f} | Acc: {test_acc:.4f} | AUROC: {test_auc:.4f}")
+    # Compute ROC curve and find best threshold
+    fpr, tpr, thresholds = roc_curve(all_labels, all_probs)
+    youden_values = tpr - fpr
+    best_idx = np.argmax(youden_values)
+    best_threshold = thresholds[best_idx]
+    youden_index = youden_values[best_idx]
+    sensitivity = tpr[best_idx]
+    specificity = 1 - fpr[best_idx]
 
-    return test_loss, test_acc.item(), test_auc
+    # Compute accuracy and F1 at that threshold
+    preds = (all_probs >= best_threshold).astype(int)
+    acc = np.mean(preds == all_labels)
+    f1 = f1_score(all_labels, preds)
+
+    metrics = {
+        "loss": avg_loss,
+        "accuracy": acc,
+        "auroc": auroc,
+        "f1": f1,
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+        "youden_index": youden_index,
+        "optimal_threshold": best_threshold,
+    }
+
+    logger.info(metrics)
+
+    return metrics
