@@ -119,7 +119,7 @@ def train_model(
             best_epoch = epoch
             epochs_no_improve = 0
             best_weights = model.state_dict()
-            torch.save(best_weights, save_dir / "best_model.pt")
+            torch.save(best_weights, save_dir / f"{save_prefix}_best_model.pt")
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= patience:
