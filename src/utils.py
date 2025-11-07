@@ -10,11 +10,12 @@ from scipy.io import loadmat as lm
 import torch
 
 
-def loadmat(file_path):
+def loadmat(file_path, type="pulse"):
     """Load a .mat file, handling both v7.3 and earlier versions.
 
     Args:
         file_path (str or Path): Path to the .mat file.
+        type (str): Type of data to load ('pulse' or 'baseline').
 
     Returns:
         dict: A dictionary containing the contents of the .mat file.
@@ -36,10 +37,14 @@ def loadmat(file_path):
         outputs["fs"] = np.uint16(spes["fs"])
         outputs["labels"] = spes["labels"]
 
-    try:
-        outputs["pulse"] = spes["filt_data"]
-    except KeyError:
-        outputs["pulse"] = spes["pulse"]
+    if type == "pulse":
+        try:
+            outputs["pulse"] = spes["filt_data"]
+        except KeyError:
+            outputs["pulse"] = spes["pulse"]
+    elif type == "baseline":
+        for i in range(1, 4):
+            outputs[f"pre_train_{i}"] = spes[f"pre_train_{i}"]
 
     outputs["labels"] = [l.replace(" ", "") for l in outputs["labels"]]  # get rid of spaces
 

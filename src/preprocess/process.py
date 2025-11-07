@@ -158,7 +158,12 @@ def combine_pulses(pulse_paths, possible_targets, dist_threshold=20):
 
             # Load each pulse file
             mat_data = loadmat(pulse_path)
-            pulse = mat_data["pulse"]
+
+            pulse = normalize_pulse(mat_data, pulse_path)
+            if pulse is False:
+                logger.error(f"Skipping file due to normalization error: {pulse_path}")
+                continue
+
             labels = np.array(mat_data["labels"])
             current = float(pulse_path.name.split("_")[2].strip("mA"))
 
@@ -228,3 +233,50 @@ def get_pulse_paths(subj):
     pulse_paths = list(pulse_dir.glob("*.mat"))
 
     return pulse_paths
+
+
+def normalize_pulse(pulse, pulse_path):
+    """
+    Normalize pulse data by z-scoring each channel based on its pre-stimulus baseline.
+    Args:
+        pulse (np.array): Pulse data of shape [n_channels, n_timepoints].
+        pulse_path (Path): Path to the pulse .mat file (for logging purposes).
+
+    Returns:
+        np.array: Normalized pulse data of the same shape.
+    """
+
+    subj, stim, ma = pulse_path.name.split("_")[:3]
+
+    config = load_yaml()
+    baseline_dir = pulse_path.parent.parent / config["Paths"]["subj_pretrain_dir"].replace(
+        "$SUBJ", subj
+    )
+    baseline_path = baseline_dir / f"{subj}_{stim}_pre_train_{ma}.mat"
+
+    if not baseline_path.exists():
+        logger.error(f"Baseline file not found for normalization: {baseline_path}")
+        return False  # return False to indicate failure
+
+    baseline = loadmat(baseline_path, type="baseline")
+    pretrain_monopolar = np.hstack(
+        (baseline["pre_train_1"], baseline["pre_train_2"], baseline["pre_train_3"])
+    )
+
+    n_chans = pulse["pulse"].shape[0]
+    pretrain = np.empty(shape=(n_chans, pretrain_monopolar.shape[1]))
+
+    for i in range(n_chans):
+        monopolar_idxs = [
+            np.where(np.array(baseline["labels"]) == c)[0][0] for c in pulse["labels"][i].split("-")
+        ]
+        pretrain[i, :] = (
+            pretrain_monopolar[monopolar_idxs[0], :] - pretrain_monopolar[monopolar_idxs[1], :]
+        )
+
+    pretrain_mean = np.mean(pretrain, axis=1, keepdims=True)
+    pretrain_std = np.std(pretrain, axis=1, keepdims=True)
+    # Z-score normalization
+    normalized_pulse = (pulse["pulse"] - pretrain_mean) / pretrain_std
+
+    return normalized_pulse

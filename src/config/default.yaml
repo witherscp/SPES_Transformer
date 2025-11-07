@@ -8,6 +8,7 @@ Paths:
 
   # Folder names
   subj_pulse_dir: "$SUBJ_CCEP_single_pulses_bipole"
+  subj_pretrain_dir: "$SUBJ_CCEP_pre_train_baselines"
   
   # File names
   subj_bip_lut_file: '$SUBJ_crave_edf_LUT.csv'
