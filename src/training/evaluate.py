@@ -6,15 +6,14 @@ import numpy as np
 from sklearn.metrics import roc_auc_score, f1_score, confusion_matrix, roc_curve
 
 
-def evaluate_model(model, dataloader, criterion, device):
+def evaluate_model(model, dataloader, device):
     """
-    Evaluate model on a given dataset and compute loss, AUROC, F1 score, and Youden index.
+    Evaluate model on a given dataset and compute AUROC, F1 score, and Youden index.
 
     Returns:
-        dict with loss, accuracy, AUROC, F1, sensitivity, specificity, Youden index
+        dict with accuracy, AUROC, F1, sensitivity, specificity, Youden index
     """
     model.eval()
-    running_loss = 0.0
     all_labels = []
     all_probs = []
 
@@ -24,8 +23,6 @@ def evaluate_model(model, dataloader, criterion, device):
             labels = labels.to(device)
 
             outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            running_loss += loss.item() * labels.size(0)
 
             # For probabilities and predictions
             probs = torch.softmax(outputs, dim=1)
@@ -38,9 +35,6 @@ def evaluate_model(model, dataloader, criterion, device):
     # Concatenate all batches
     all_labels = np.concatenate(all_labels)
     all_probs = np.concatenate(all_probs)
-
-    # ---- Compute metrics ----
-    avg_loss = running_loss / len(dataloader.dataset)
 
     # AUROC
     try:
@@ -63,7 +57,6 @@ def evaluate_model(model, dataloader, criterion, device):
     f1 = f1_score(all_labels, preds)
 
     metrics = {
-        "loss": avg_loss,
         "accuracy": acc,
         "auroc": auroc,
         "f1": f1,
