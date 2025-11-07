@@ -201,14 +201,14 @@ class SEEGFusionModel(nn.Module):
         resnet_div_output = self.div_msresnet(resnet_div_input)
 
         # TODO: remove debugging once I fix large min/max issue
-        print(
-            "resnet_conv_output: mean {:.3e}, std {:.3e}, min {:.3e}, max {:.3e}".format(
-                resnet_conv_output.mean().item(),
-                resnet_conv_output.std().item(),
-                resnet_conv_output.min().item(),
-                resnet_conv_output.max().item(),
-            )
-        )
+        # print(
+        #     "resnet_conv_output: mean {:.3e}, std {:.3e}, min {:.3e}, max {:.3e}".format(
+        #         resnet_conv_output.mean().item(),
+        #         resnet_conv_output.std().item(),
+        #         resnet_conv_output.min().item(),
+        #         resnet_conv_output.max().item(),
+        #     )
+        # )
 
         # Reshape back to [B, n_electrodes, n_trials, input_dim]
         conv_embeddings = torch.zeros(
