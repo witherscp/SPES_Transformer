@@ -240,3 +240,50 @@ class SEEGFusionModel(nn.Module):
 
         logits = self.classifier(fused)
         return logits
+
+
+class BaselineModel(nn.Module):
+    def __init__(
+        self, embed_dim=128, n_classes=2, device="cuda", stim_model="convergent", n_elecs=30
+    ):
+        super().__init__()
+
+        assert stim_model in ["convergent", "divergent"]
+        self.stim_model = stim_model
+        self.msresnet = MSResNet(input_channel=1, num_classes=embed_dim, dropout_rate=0.2)
+
+        self.classifier = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(embed_dim, n_classes),
+        )
+
+    def forward(self, inputs):
+
+        # unpack inputs from dictionary
+        x = inputs[self.stim_model]  # [B, n_electrodes, n_trials, n_timepoints]
+        padding_mask = inputs[f"{self.stim_model}_mask"]  # [B, n_electrodes, n_trials]
+
+        # get dimensions from arrays
+        B, _, _, n_timepoints = x.shape
+
+        # default array to fill
+        resnet_input = torch.zeros(B, 1, n_timepoints)
+
+        # select random trials for each target (max 1 trial per 1 electrode)
+        target_inds, elec_inds, trial_inds = torch.where(~padding_mask)
+        for target_ind in range(B):
+            target_mask = target_inds == target_ind
+            rand_ind = torch.randint(0, len(elec_inds[target_mask]), (1,))
+            elec_ind = elec_inds[target_mask][rand_ind]
+            elec_mask = elec_inds[target_mask] == elec_ind
+            rand_ind = torch.randint(0, len(trial_inds[target_mask][elec_mask]), (1,))
+            trial_ind = trial_inds[target_mask][elec_mask][rand_ind]
+            resnet_input[target_ind] = x[target_ind, elec_ind, trial_ind, :]
+
+        # Create embeddings through MSResNet
+        resnet_output = self.msresnet(resnet_input)
+
+        logits = self.classifier(resnet_output)
+        return logits
