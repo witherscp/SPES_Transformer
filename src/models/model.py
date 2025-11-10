@@ -1,3 +1,4 @@
+from loguru import logger
 import numpy as np
 import torch
 import torch.nn as nn
@@ -200,16 +201,6 @@ class SEEGFusionModel(nn.Module):
         resnet_conv_output = self.conv_msresnet(resnet_conv_input)
         resnet_div_output = self.div_msresnet(resnet_div_input)
 
-        # TODO: remove debugging once I fix large min/max issue
-        # print(
-        #     "resnet_conv_output: mean {:.3e}, std {:.3e}, min {:.3e}, max {:.3e}".format(
-        #         resnet_conv_output.mean().item(),
-        #         resnet_conv_output.std().item(),
-        #         resnet_conv_output.min().item(),
-        #         resnet_conv_output.max().item(),
-        #     )
-        # )
-
         # Reshape back to [B, n_electrodes, n_trials, input_dim]
         conv_embeddings = torch.zeros(
             (B * n_stims * n_trials, resnet_conv_output.shape[1]), device=resnet_conv_output.device
@@ -244,14 +235,22 @@ class SEEGFusionModel(nn.Module):
 
 class BaselineModel(nn.Module):
     def __init__(
-        self, embed_dim=128, n_classes=2, device="cuda", stim_model="convergent", n_elecs=30
+        self,
+        embed_dim=128,
+        n_classes=2,
+        device="cuda",
+        stim_model="convergent",
+        n_elecs=25,
+        generator=None,
     ):
         super().__init__()
 
         assert stim_model in ["convergent", "divergent"]
         self.stim_model = stim_model
-        self.msresnet = MSResNet(input_channel=1, num_classes=embed_dim, dropout_rate=0.2)
+        self.g = generator
+        self.n_elecs = n_elecs
 
+        self.msresnet = MSResNet(input_channel=self.elecs, num_classes=embed_dim, dropout_rate=0.2)
         self.classifier = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.ReLU(),
@@ -269,18 +268,32 @@ class BaselineModel(nn.Module):
         B, _, _, n_timepoints = x.shape
 
         # default array to fill
-        resnet_input = torch.zeros(B, 1, n_timepoints)
+        resnet_input = torch.zeros(B, self.n_elecs, n_timepoints)
 
         # select random trials for each target (max 1 trial per 1 electrode)
         target_inds, elec_inds, trial_inds = torch.where(~padding_mask)
         for target_ind in range(B):
             target_mask = target_inds == target_ind
-            rand_ind = torch.randint(0, len(elec_inds[target_mask]), (1,))
-            elec_ind = elec_inds[target_mask][rand_ind]
-            elec_mask = elec_inds[target_mask] == elec_ind
-            rand_ind = torch.randint(0, len(trial_inds[target_mask][elec_mask]), (1,))
-            trial_ind = trial_inds[target_mask][elec_mask][rand_ind]
-            resnet_input[target_ind] = x[target_ind, elec_ind, trial_ind, :]
+            possible_elecs = elec_inds[target_mask].unique()
+            for i in range(self.n_elecs):
+                if len(possible_elecs) == 0:
+                    logger.warning(
+                        f"Ran out of electrodes to select for target {target_ind} at elec index {i}. Results will be invalid. Reduce n_elecs to {i} and re-run."
+                    )
+                    break
+
+                # randomly select an electrode index
+                rand_ind = torch.randint(0, len(possible_elecs), (1,), generator=self.g)
+                elec_ind = possible_elecs[rand_ind]
+                elec_mask = elec_inds[target_mask] == elec_ind
+
+                # randomly select a trial for that electrode
+                rand_ind = torch.randint(0, len(trial_inds[target_mask][elec_mask]), (1,))
+                trial_ind = trial_inds[target_mask][elec_mask][rand_ind]
+                resnet_input[target_ind, i] = x[target_ind, elec_ind, trial_ind, :]
+
+                # remove elec from possible selections
+                possible_elecs = possible_elecs[possible_elecs != elec_ind]
 
         # Create embeddings through MSResNet
         resnet_output = self.msresnet(resnet_input)
