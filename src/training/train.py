@@ -56,7 +56,7 @@ def train_model(
         train_correct = 0
 
         # --- TRAIN LOOP ---
-        for batch_idx, (inputs, labels) in enumerate(
+        for step, (inputs, labels) in enumerate(
             tqdm(dataloaders["train"], desc=f"Epoch {epoch} [train]", leave=False)
         ):
             inputs = move_to_device(inputs, device)
@@ -71,7 +71,7 @@ def train_model(
                 loss = criterion(outputs, labels)
 
             if torch.isnan(loss):
-                logger.error(f"NaN loss detected at batch {batch_idx}")
+                logger.error(f"NaN loss detected at batch {step}")
                 continue
 
             loss.backward()
