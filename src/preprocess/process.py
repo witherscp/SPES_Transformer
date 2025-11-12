@@ -122,7 +122,7 @@ def combine_pulses(pulse_paths, possible_targets, dist_threshold=20):
     # get number of timepoints and response_names based on first file
     # (assuming all files have same number of timepoints and labels)
     mat = loadmat(pulse_paths[0])
-    n_timepoints = mat["pulse"].shape[1]
+    n_timepoints = mat["data"].shape[1]
     response_names = mat["labels"]
 
     # get remaining dimensions
@@ -258,12 +258,12 @@ def normalize_pulse(pulse, pulse_path):
         logger.error(f"Baseline file not found for normalization: {baseline_path}")
         return False  # return False to indicate failure
 
-    baseline = loadmat(baseline_path, type="baseline")
+    baseline = loadmat(baseline_path)
     pretrain_monopolar = np.hstack(
         (baseline["pre_train_1"], baseline["pre_train_2"], baseline["pre_train_3"])
     )
 
-    n_chans = pulse["pulse"].shape[0]
+    n_chans = pulse["data"].shape[0]
     pretrain = np.empty(shape=(n_chans, pretrain_monopolar.shape[1]))
 
     for i in range(n_chans):
@@ -277,6 +277,6 @@ def normalize_pulse(pulse, pulse_path):
     pretrain_mean = np.mean(pretrain, axis=1, keepdims=True)
     pretrain_std = np.std(pretrain, axis=1, keepdims=True)
     # Z-score normalization
-    normalized_pulse = (pulse["pulse"] - pretrain_mean) / pretrain_std
+    normalized_pulse = (pulse["data"] - pretrain_mean) / pretrain_std
 
     return normalized_pulse

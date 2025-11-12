@@ -7,46 +7,73 @@ from loguru import logger
 import nibabel as nib
 import mat73
 from scipy.io import loadmat as lm
-import torch
+import re
 
 
-def loadmat(file_path, type="pulse"):
+def loadmat(file_path, data=["all"], verbose=False):
     """Load a .mat file, handling both v7.3 and earlier versions.
 
     Args:
         file_path (str or Path): Path to the .mat file.
-        type (str): Type of data to load ('pulse' or 'baseline').
+        data (list): List of data names to load. Default is ['all'].
+            ['all'] loads all available data.
+            ['labels', 'fs', 'pulse'] for example will load only those variables.
+        verbose (bool): If True, print information about loaded data. Default is False.
 
     Returns:
         dict: A dictionary containing the contents of the .mat file.
     """
 
     outputs = {}
+
+    # load .mat file
     try:
-        spes = lm(file_path)
-        outputs["fs"] = np.uint16(spes["fs"][0][0])
-        if spes["labels"].shape[0] == 1:
-            outputs["labels"] = [l[0] for l in spes["labels"][0]]
-        elif spes["labels"].ndim == 1:
-            outputs["labels"] = spes["labels"]
-        else:
-            outputs["labels"] = [l[0][0] for l in spes["labels"]]
-
+        mat = lm(file_path)
     except NotImplementedError:
-        spes = mat73.loadmat(file_path)
-        outputs["fs"] = np.uint16(spes["fs"])
-        outputs["labels"] = spes["labels"]
+        mat = mat73.loadmat(file_path)
 
-    if type == "pulse":
-        try:
-            outputs["pulse"] = spes["filt_data"]
-        except KeyError:
-            outputs["pulse"] = spes["pulse"]
-    elif type == "baseline":
-        for i in range(1, 4):
-            outputs[f"pre_train_{i}"] = spes[f"pre_train_{i}"]
+    if data == ["all"]:
+        data = [key for key in mat.keys() if not key.startswith("__")]
 
-    outputs["labels"] = [l.replace(" ", "") for l in outputs["labels"]]  # get rid of spaces
+    for d in data:
+        match d:
+            case fs if fs in ["fs", "sfreq"]:
+                outputs["fs"] = np.uint16(mat[fs])
+                if isinstance(outputs["fs"], np.ndarray):
+                    outputs["fs"] = outputs["fs"][0][0]
+
+            case label if label in ["labels", "bip_montage_label"]:
+                if mat[label].shape[0] == 1:
+                    outputs[label] = [l[0] for l in mat[label][0]]
+                elif mat[label].ndim == 1:
+                    outputs[label] = mat[label]
+                else:
+                    outputs[label] = [l[0][0] for l in mat[label]]
+
+                # remove white spaces from labels
+                outputs[label] = [l.replace(" ", "") for l in outputs[label]]  # get rid of spaces
+
+            case s if re.fullmatch(r"pre_train_(\d{1,2})", s):
+                outputs[s] = mat[s]
+
+            case timeseries if timeseries in ["pulse", "filt_data"]:
+                outputs["data"] = mat[timeseries]
+
+            case "filt_params":
+                outputs["filt_params"] = mat["filt_params"][0]
+            case _:
+                if verbose:
+                    logger.warning(f"Data '{d}' has no matching case and was not loaded.")
+                continue
+
+    for k, v in outputs.items():
+        message = f"{k}: {type(v)}; "
+        if isinstance(v, np.ndarray):
+            message += f"shape: {v.shape}"
+        else:
+            message += f"value: {v}"
+        if verbose:
+            logger.info(message)
 
     return outputs
 
