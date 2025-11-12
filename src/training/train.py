@@ -15,6 +15,7 @@ def train_model(
     save_prefix,
     scheduler=None,
     n_epochs=50,
+    n_steps_per_update=1,
     patience=2,
 ):
     """
@@ -28,6 +29,7 @@ def train_model(
         save_prefix: prefix for saving out model weights
         scheduler: learning rate scheduler (optional)
         n_epochs: int, number of epochs (default: 50)
+        n_steps_per_update: gradient accumulation steps (default: 1)
         patience: early stopping patience (# consecutive epochs without improvement) (default: 2)
 
     Returns:
@@ -75,15 +77,22 @@ def train_model(
                 continue
 
             loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
 
-            if scheduler is not None:
-                scheduler.step()
-
+            # compute loss and accuracy
             train_loss += loss.item() * inputs["convergent"].size(0)
             _, preds = torch.max(outputs, 1)
             train_correct += torch.sum(preds == labels.data)
+
+            if (step + 1) % n_steps_per_update == 0:
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+                if scheduler is not None:
+                    scheduler.step()
+
+            # # Optional logging of learning rate
+            # current_lr = scheduler.get_last_lr()
+            # logger.info(f"Epoch {epoch+1}, Step {step+1}, Learning Rate: {current_lr}")
 
         epoch_train_loss = train_loss / len(dataloaders["train"].dataset)
         epoch_train_acc = train_correct.double() / len(dataloaders["train"].dataset)
