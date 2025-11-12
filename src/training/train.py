@@ -63,18 +63,21 @@ def train_model(
             labels = move_to_device(labels, device)
 
             optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
+
+            with torch.autocast(
+                device_type="cuda", dtype=torch.bfloat16, enabled=device.startswith("cuda")
+            ):
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
 
             if torch.isnan(loss):
                 logger.error(f"NaN loss detected at batch {batch_idx}")
                 continue
 
             loss.backward()
-
-            # Gradient clipping
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+
             if scheduler is not None:
                 scheduler.step()
 

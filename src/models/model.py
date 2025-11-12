@@ -148,7 +148,7 @@ class SEEGTransformer(nn.Module):
                         (key_padding_mask.shape[0], 1),
                         False,
                         dtype=torch.bool,
-                        device=channel_seq.device,
+                        device=key_padding_mask.device,  # avoid CPU vs CUDA mismatch
                     ),
                     key_padding_mask,
                 ],
@@ -203,13 +203,16 @@ class SEEGFusionModel(nn.Module):
 
         # Reshape back to [B, n_electrodes, n_trials, input_dim]
         conv_embeddings = torch.zeros(
-            (B * n_stims * n_trials, resnet_conv_output.shape[1]), device=resnet_conv_output.device
+            (B * n_stims * n_trials, resnet_conv_output.shape[1]),
+            device=resnet_conv_output.device,
+            dtype=resnet_conv_output.dtype,  # match bf16 under autocast
         )
         conv_embeddings[~conv_padding_mask.reshape(B * n_stims * n_trials)] = resnet_conv_output
         conv_embeddings = conv_embeddings.view(B, n_stims, n_trials, -1)
         div_embeddings = torch.zeros(
             (B * n_responses * n_trials, resnet_div_output.shape[1]),
             device=resnet_div_output.device,
+            dtype=resnet_div_output.dtype,  # match bf16 under autocast
         )
         div_embeddings[~div_padding_mask.reshape(B * n_responses * n_trials)] = resnet_div_output
         div_embeddings = div_embeddings.view(B, n_responses, n_trials, -1)
