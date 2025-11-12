@@ -241,7 +241,6 @@ class BaselineModel(nn.Module):
         self,
         embed_dim=128,
         n_classes=2,
-        device="cuda",
         stim_model="convergent",
         n_elecs=25,
         generator=None,
