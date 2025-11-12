@@ -121,7 +121,7 @@ def combine_pulses(pulse_paths, possible_targets, dist_threshold=20):
 
     # get number of timepoints and response_names based on first file
     # (assuming all files have same number of timepoints and labels)
-    mat = loadmat(pulse_paths[0])
+    mat = loadmat(pulse_paths[0], data=["labels", "data"])
     n_timepoints = mat["data"].shape[1]
     response_names = mat["labels"]
 
@@ -157,7 +157,7 @@ def combine_pulses(pulse_paths, possible_targets, dist_threshold=20):
         for pulse_path in stim_paths:
 
             # Load each pulse file
-            mat_data = loadmat(pulse_path)
+            mat_data = loadmat(pulse_path, data=["labels", "data"])
 
             pulse = normalize_pulse(mat_data, pulse_path)
             if pulse is False:
@@ -258,7 +258,7 @@ def normalize_pulse(pulse, pulse_path):
         logger.error(f"Baseline file not found for normalization: {baseline_path}")
         return False  # return False to indicate failure
 
-    baseline = loadmat(baseline_path)
+    baseline = loadmat(baseline_path, data=["pre_train_1", "pre_train_2", "pre_train_3", "labels"])
     pretrain_monopolar = np.hstack(
         (baseline["pre_train_1"], baseline["pre_train_2"], baseline["pre_train_3"])
     )

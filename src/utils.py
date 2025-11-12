@@ -43,12 +43,15 @@ def loadmat(file_path, data=["all"], verbose=False):
                     outputs["fs"] = outputs["fs"][0][0]
 
             case label if label in ["labels", "bip_montage_label"]:
-                if mat[label].shape[0] == 1:
-                    outputs[label] = [l[0] for l in mat[label][0]]
-                elif mat[label].ndim == 1:
+                if isinstance(mat[label], list):
                     outputs[label] = mat[label]
                 else:
-                    outputs[label] = [l[0][0] for l in mat[label]]
+                    if mat[label].shape[0] == 1:
+                        outputs[label] = [l[0] for l in mat[label][0]]
+                    elif mat[label].ndim == 1:
+                        outputs[label] = mat[label]
+                    else:
+                        outputs[label] = [l[0][0] for l in mat[label]]
 
                 # remove white spaces from labels
                 outputs[label] = [l.replace(" ", "") for l in outputs[label]]  # get rid of spaces
@@ -56,8 +59,13 @@ def loadmat(file_path, data=["all"], verbose=False):
             case s if re.fullmatch(r"pre_train_(\d{1,2})", s):
                 outputs[s] = mat[s]
 
-            case timeseries if timeseries in ["pulse", "filt_data"]:
-                outputs["data"] = mat[timeseries]
+            case timeseries if timeseries in ["pulse", "filt_data", "data"]:
+                if timeseries == "data":
+                    for test_key in ["pulse", "filt_data"]:
+                        if test_key in mat.keys():
+                            outputs["data"] = mat[test_key]
+                else:
+                    outputs["data"] = mat[timeseries]
 
             case "filt_params":
                 outputs["filt_params"] = mat["filt_params"][0]
