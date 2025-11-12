@@ -191,7 +191,7 @@ class SEEGFusionModel(nn.Module):
         B, n_stims, n_trials, n_timepoints = x_conv.shape
         n_responses = x_div.shape[1]
 
-        # extract non-NaN trials for MSResNet input
+        # extract non-padded trials for MSResNet input
         resnet_conv_input = x_conv.reshape(B * n_stims * n_trials, 1, n_timepoints)
         resnet_conv_input = resnet_conv_input[~conv_padding_mask.reshape(B * n_stims * n_trials)]
         resnet_div_input = x_div.reshape(B * n_responses * n_trials, 1, n_timepoints)
