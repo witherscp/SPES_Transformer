@@ -63,35 +63,37 @@ class TransformerBlock(nn.Module):
         return x
 
 
-# ---------- Cross-Attention Fusion block ----------
-class CrossAttentionFusion(nn.Module):
-    def __init__(self, embed_dim, n_heads=4):
-        super().__init__()
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=embed_dim, num_heads=n_heads, batch_first=True
-        )
-        self.norm = nn.LayerNorm(embed_dim)
-
-    def forward(self, query, context):
-        """
-        query: [B, 1, dim]  (cls token or summary from one modality)
-        context: [B, N, dim] (sequence from another modality)
-        """
-        attn_out, _ = self.cross_attn(query, context, context)
-        out = self.norm(query + attn_out)
-        return out
-
-
 # ---------- Core SEEG Transformer for one paradigm ----------
 class SEEGTransformer(nn.Module):
-    def __init__(self, embed_dim=128, n_heads=4, device="cuda"):
+    def __init__(self, embed_dim=128, n_heads=4, dropout=0.1, num_layers=3, device="cuda"):
         super().__init__()
 
+        # self.cross_trial = TransformerBlock(embed_dim, n_heads=n_heads)
+        # self.cross_channel = TransformerBlock(embed_dim, n_heads=n_heads)
+
         # Cross-trial self-attention
-        self.cross_trial = TransformerBlock(embed_dim, n_heads=n_heads)
+        trial_encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=n_heads,
+            dim_feedforward=embed_dim * 4,
+            dropout=dropout,
+            batch_first=True,
+            device=device,
+            activation="gelu",
+        )
+        self.trial_encoder = nn.TransformerEncoder(trial_encoder_layer, num_layers=num_layers)
 
         # Cross-channel self-attention
-        self.cross_channel = TransformerBlock(embed_dim, n_heads=n_heads)
+        channel_encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=n_heads,
+            dim_feedforward=embed_dim * 4,
+            dropout=dropout,
+            batch_first=True,
+            device=device,
+            activation="gelu",
+        )
+        self.channel_encoder = nn.TransformerEncoder(channel_encoder_layer, num_layers=num_layers)
 
         # CLS tokens for summarization
         self.cls_token1 = nn.Parameter(nn.init.xavier_normal_(torch.empty(1, 1, embed_dim))).to(
@@ -129,7 +131,7 @@ class SEEGTransformer(nn.Module):
                 [torch.unsqueeze(key_padding_mask[:, 0], -1), key_padding_mask], dim=1
             )
 
-        trial_seq = self.cross_trial(trial_seq, key_padding_mask=key_padding_mask)
+        trial_seq = self.trial_encoder(trial_seq, src_key_padding_mask=key_padding_mask)
         electrode_emb = trial_seq[:, 0]  # take cls token per electrode
 
         # ---- Step 2: Cross-channel attention (across electrodes) ----
@@ -148,14 +150,14 @@ class SEEGTransformer(nn.Module):
                         (key_padding_mask.shape[0], 1),
                         False,
                         dtype=torch.bool,
-                        device=key_padding_mask.device,  # avoid CPU vs CUDA mismatch
+                        device=key_padding_mask.device,
                     ),
                     key_padding_mask,
                 ],
                 dim=1,
             )
 
-        channel_seq = self.cross_channel(channel_seq, key_padding_mask=key_padding_mask)
+        channel_seq = self.channel_encoder(channel_seq, src_key_padding_mask=key_padding_mask)
 
         summary = channel_seq[:, 0]  # CLS token output summary for the entire paradigm
         return summary
@@ -168,12 +170,11 @@ class SEEGFusionModel(nn.Module):
 
         self.conv_msresnet = MSResNet(input_channel=1, num_classes=embed_dim, dropout_rate=0.2)
         self.div_msresnet = MSResNet(input_channel=1, num_classes=embed_dim, dropout_rate=0.2)
-        self.conv_block = SEEGTransformer(embed_dim=embed_dim, n_heads=4, device=device)
-        self.div_block = SEEGTransformer(embed_dim=embed_dim, n_heads=4, device=device)
+        self.conv_transformer = SEEGTransformer(embed_dim=embed_dim, n_heads=4, device=device)
+        self.div_transformer = SEEGTransformer(embed_dim=embed_dim, n_heads=4, device=device)
 
-        self.fusion = CrossAttentionFusion(embed_dim=embed_dim, n_heads=4)
         self.classifier = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
+            nn.Linear(embed_dim * 2, embed_dim),
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(embed_dim, n_classes),
@@ -219,20 +220,13 @@ class SEEGFusionModel(nn.Module):
 
         # Create convergent and divergent embeddings through respective transformer blocks
         # output will have shape [B, embed_dim]
-        conv_emb = self.conv_block(conv_embeddings, key_padding_mask=conv_padding_mask)
-        div_emb = self.div_block(div_embeddings, key_padding_mask=div_padding_mask)
+        conv_emb = self.conv_transformer(conv_embeddings, key_padding_mask=conv_padding_mask)
+        div_emb = self.div_transformer(div_embeddings, key_padding_mask=div_padding_mask)
 
-        # Add singleton dimension for cross-attention
-        # Now shape: [B, 1, embed_dim]
-        conv_emb = conv_emb.unsqueeze(1)
-        div_emb = div_emb.unsqueeze(1)
+        # Join embeddings
+        joint_emb = torch.cat([conv_emb, div_emb], dim=1)
 
-        # Fuse: CLS from one attends to the other
-        # TODO: remove asymmetry by doing self-attention?
-        fused = self.fusion(conv_emb, div_emb)
-        fused = fused.squeeze(1)
-
-        logits = self.classifier(fused)
+        logits = self.classifier(joint_emb)
         return logits
 
 
