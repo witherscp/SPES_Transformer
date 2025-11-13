@@ -23,6 +23,8 @@ class SEEGDataset(Dataset):
         if subjects is None:
             subjects = [f.stem for f in data_dir.glob("*.pt")]
 
+        self.subjects = subjects
+
         max_stims, max_responses, max_trials = 0, 0, 0
         for subj in subjects:
             path = data_dir / f"{subj}.pt"
