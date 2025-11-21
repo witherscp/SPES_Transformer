@@ -17,6 +17,7 @@ def train_model(
     n_epochs=50,
     n_steps_per_update=1,
     patience=2,
+    use_val=True,
 ):
     """
     Train a model with early stopping and per-epoch checkpoint saving.
@@ -31,6 +32,7 @@ def train_model(
         n_epochs: int, number of epochs (default: 50)
         n_steps_per_update: gradient accumulation steps (default: 1)
         patience: early stopping patience (# consecutive epochs without improvement) (default: 2)
+        use_val: whether to use validation set for early stopping (default: True)
 
     Returns:
         model: trained model (with best weights loaded)
@@ -48,7 +50,6 @@ def train_model(
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
 
     logger.info(f"\nStarting training for {n_epochs} epochs on device: {device}")
-    print("=" * 60)
 
     for epoch in range(1, n_epochs + 1):
         epoch_start = time.time()
@@ -98,60 +99,64 @@ def train_model(
         epoch_train_acc = train_correct.double() / len(dataloaders["train"].dataset)
 
         # --- VALIDATION LOOP ---
-        model.eval()
-        val_loss = 0.0
-        val_correct = 0
+        if use_val:
+            model.eval()
+            val_loss = 0.0
+            val_correct = 0
 
-        with torch.no_grad():
-            for inputs, labels in tqdm(
-                dataloaders["val"], desc=f"Epoch {epoch} [val]", leave=False
-            ):
-                inputs = move_to_device(inputs, device)
-                labels = move_to_device(labels, device)
+            with torch.no_grad():
+                for inputs, labels in tqdm(
+                    dataloaders["val"], desc=f"Epoch {epoch} [val]", leave=False
+                ):
+                    inputs = move_to_device(inputs, device)
+                    labels = move_to_device(labels, device)
 
-                outputs = model(inputs)
-                loss = criterion(outputs, labels)
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
 
-                val_loss += loss.item() * inputs["convergent"].size(0)
-                _, preds = torch.max(outputs, 1)
-                val_correct += torch.sum(preds == labels.data)
+                    val_loss += loss.item() * inputs["convergent"].size(0)
+                    _, preds = torch.max(outputs, 1)
+                    val_correct += torch.sum(preds == labels.data)
 
-        epoch_val_loss = val_loss / len(dataloaders["val"].dataset)
-        epoch_val_acc = val_correct.double() / len(dataloaders["val"].dataset)
+            epoch_val_loss = val_loss / len(dataloaders["val"].dataset)
+            epoch_val_acc = val_correct.double() / len(dataloaders["val"].dataset)
+
         epoch_time = time.time() - epoch_start
 
+        # --- Epoch summary ---
         logger.info(f"\nEpoch {epoch}/{n_epochs} Summary:")
         logger.info(f"  Train Loss: {epoch_train_loss:.4f} | Train Acc: {epoch_train_acc:.4f}")
-        logger.info(f"  Val Loss:   {epoch_val_loss:.4f} | Val Acc:   {epoch_val_acc:.4f}")
+        if use_val:
+            logger.info(f"  Val Loss: {epoch_val_loss:.4f} | Val Acc: {epoch_val_acc:.4f}")
         logger.info(f"  Time: {epoch_time:.2f}s")
-        print("=" * 60)
 
         # --- Logging and checkpointing ---
         history["train_loss"].append(epoch_train_loss)
         history["train_acc"].append(epoch_train_acc.item())
-        history["val_loss"].append(epoch_val_loss)
-        history["val_acc"].append(epoch_val_acc.item())
+        if use_val:
+            history["val_loss"].append(epoch_val_loss)
+            history["val_acc"].append(epoch_val_acc.item())
 
         # Save checkpoint for every epoch
         torch.save(model.state_dict(), save_dir / f"{save_prefix}_epoch_{epoch}.pt")
 
         # Early stopping logic
-        if epoch_val_loss < best_val_loss:
-            best_val_loss = epoch_val_loss
-            best_epoch = epoch
-            epochs_no_improve = 0
-            best_weights = model.state_dict()
-            torch.save(best_weights, save_dir / f"{save_prefix}_best_model.pt")
-        else:
-            epochs_no_improve += 1
-            if epochs_no_improve >= patience:
-                logger.success(
-                    f"⏹ Early stopping at epoch {epoch} (no val loss improvement for {patience} epochs)"
-                )
-                break
+        if use_val:
+            if epoch_val_loss < best_val_loss:
+                best_val_loss = epoch_val_loss
+                best_epoch = epoch
+                epochs_no_improve = 0
+                best_weights = model.state_dict()
+                torch.save(best_weights, save_dir / f"{save_prefix}_best_model.pt")
+            else:
+                epochs_no_improve += 1
+                if epochs_no_improve >= patience:
+                    logger.success(
+                        f"⏹ Early stopping at epoch {epoch} (no val loss improvement for {patience} epochs)"
+                    )
+                    model.load_state_dict(best_weights)
+                    break
 
-    # Load best weights before returning
-    model.load_state_dict(best_weights)
     return model, history, best_epoch
 
 
