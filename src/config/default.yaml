@@ -26,7 +26,7 @@ Parameters:
   n_epochs: 25
   n_steps_per_update: 2
   patience: 2
-  val_ratio: 0.2
+  val_ratio: 0.0
   base_lr: 0.0000003
   max_lr: 0.000001
   step_size_up_down: 50

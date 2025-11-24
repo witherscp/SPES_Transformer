@@ -65,7 +65,7 @@ class TransformerBlock(nn.Module):
 
 # ---------- Core SEEG Transformer for one paradigm ----------
 class SEEGTransformer(nn.Module):
-    def __init__(self, embed_dim=128, n_heads=4, dropout=0.1, num_layers=3, device="cuda"):
+    def __init__(self, embed_dim=128, n_heads=4, dropout=0.1, num_layers=1, device="cuda"):
         super().__init__()
 
         # self.cross_trial = TransformerBlock(embed_dim, n_heads=n_heads)
@@ -94,6 +94,12 @@ class SEEGTransformer(nn.Module):
             activation="gelu",
         )
         self.channel_encoder = nn.TransformerEncoder(channel_encoder_layer, num_layers=num_layers)
+
+        # # Enable gradient checkpointing for memory efficiency
+        # for m in self.trial_encoder.layers:
+        #     m.gradient_checkpointing = True
+        # for m in self.channel_encoder.layers:
+        #     m.gradient_checkpointing = True
 
         # CLS tokens for summarization
         self.cls_token1 = nn.Parameter(nn.init.xavier_normal_(torch.empty(1, 1, embed_dim))).to(
