@@ -66,10 +66,29 @@ def train_model(
     tb_run_name = f"{save_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     writer = SummaryWriter(log_dir=f"../tb_logs/{tb_run_name}")
 
-    # Log model graph using one example batch
+    # Log model graph using one example batch (safe handling for dict inputs)
     try:
         example_inputs, _ = next(iter(dataloaders["train"]))
-        writer.add_graph(model, move_to_device(example_inputs, device))
+        # If input is a dict, wrap model so add_graph can receive a tuple of tensors
+        if isinstance(example_inputs, dict):
+            keys = list(example_inputs.keys())
+            example_tensors = tuple(move_to_device(example_inputs[k], device) for k in keys)
+
+            class _GraphWrapper(nn.Module):
+                def __init__(self, model, keys):
+                    super().__init__()
+                    self.model = model
+                    self.keys = keys
+
+                def forward(self, *args):
+                    inp = {k: v for k, v in zip(self.keys, args)}
+                    return self.model(inp)
+
+            wrapper = _GraphWrapper(model, keys)
+            writer.add_graph(wrapper, example_tensors)
+        else:
+            example_inputs = move_to_device(example_inputs, device)
+            writer.add_graph(model, example_inputs)
     except Exception as e:
         logger.warning(f"Could not log graph: {e}")
 
@@ -107,22 +126,11 @@ def train_model(
                 logger.error(f"NaN loss detected at batch {step}")
                 continue
 
-            global_step = epoch * len(dataloaders["train"]) + step
+            # global_step starts from 0
+            global_step = (epoch - 1) * len(dataloaders["train"]) + step
             writer.add_scalar("Batch/Loss", loss.item(), global_step)
 
             loss.backward()
-
-            # gradient norm
-            total_norm = 0
-            for p in model.parameters():
-                if p.grad is not None:
-                    param_norm = p.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-            writer.add_scalar("Batch/GradNorm", total_norm**0.5, global_step)
-
-            # log LR
-            for idx, param_group in enumerate(optimizer.param_groups):
-                writer.add_scalar(f"LR/group{idx}", param_group["lr"], global_step)
 
             # compute loss and accuracy
             train_loss += loss.item() * inputs["convergent"].size(0)
@@ -136,9 +144,17 @@ def train_model(
                 if scheduler is not None:
                     scheduler.step()
 
-            # # Optional logging of learning rate
-            # current_lr = scheduler.get_last_lr()
-            # logger.info(f"Epoch {epoch+1}, Step {step+1}, Learning Rate: {current_lr}")
+            # gradient norm (computed from current grads)
+            total_norm = 0.0
+            for p in model.parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.data.norm(2)
+                    total_norm += float(param_norm.item()) ** 2
+            writer.add_scalar("Batch/GradNorm", total_norm**0.5, global_step)
+
+            # log LR (supports multiple param groups)
+            for idx, param_group in enumerate(optimizer.param_groups):
+                writer.add_scalar(f"LR/group{idx}", param_group["lr"], global_step)
 
         epoch_train_loss = train_loss / len(dataloaders["train"].dataset)
         epoch_train_acc = train_correct.double() / len(dataloaders["train"].dataset)
@@ -189,14 +205,10 @@ def train_model(
             writer.add_scalar("Epoch/Val_Loss", epoch_val_loss, epoch)
             writer.add_scalar("Epoch/Val_Acc", epoch_val_acc, epoch)
 
-        # --- Weight + Grad Histograms ---
+        # --- Weight histograms (epoch-level) ---
         for name, param in model.named_parameters():
             writer.add_histogram(f"Weights/{name}", param, epoch)
-            if param.grad is not None:
-                writer.add_histogram(f"Grads/{name}", param.grad, epoch)
-
-        for name, param in model.named_parameters():
-            writer.add_histogram(f"Weights/{name}", param, epoch)
+            # epoch-level grads are often None; keep optional
             if param.grad is not None:
                 writer.add_histogram(f"Grads/{name}", param.grad, epoch)
 
