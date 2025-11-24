@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Subset
+from torch.utils.tensorboard import SummaryWriter
 import torch.optim as optim
 
 from src.utils import load_yaml, move_to_device
@@ -61,6 +62,17 @@ def train_model(
     save_dir.mkdir(exist_ok=True, parents=True)
     model.to(device)
 
+    # --- TensorBoard setup ---
+    tb_run_name = f"{save_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    writer = SummaryWriter(log_dir=f"../tb_logs/{tb_run_name}")
+
+    # Log model graph using one example batch
+    try:
+        example_inputs, _ = next(iter(dataloaders["train"]))
+        writer.add_graph(model, move_to_device(example_inputs, device))
+    except Exception as e:
+        logger.warning(f"Could not log graph: {e}")
+
     best_val_loss = float("inf")
     best_epoch = 0
     epochs_no_improve = 0
@@ -95,7 +107,22 @@ def train_model(
                 logger.error(f"NaN loss detected at batch {step}")
                 continue
 
+            global_step = epoch * len(dataloaders["train"]) + step
+            writer.add_scalar("Batch/Loss", loss.item(), global_step)
+
             loss.backward()
+
+            # gradient norm
+            total_norm = 0
+            for p in model.parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+            writer.add_scalar("Batch/GradNorm", total_norm**0.5, global_step)
+
+            # log LR
+            for idx, param_group in enumerate(optimizer.param_groups):
+                writer.add_scalar(f"LR/group{idx}", param_group["lr"], global_step)
 
             # compute loss and accuracy
             train_loss += loss.item() * inputs["convergent"].size(0)
@@ -155,6 +182,24 @@ def train_model(
             history["val_loss"].append(epoch_val_loss)
             history["val_acc"].append(epoch_val_acc.item())
 
+        writer.add_scalar("Epoch/Train_Loss", epoch_train_loss, epoch)
+        writer.add_scalar("Epoch/Train_Acc", epoch_train_acc, epoch)
+
+        if use_val:
+            writer.add_scalar("Epoch/Val_Loss", epoch_val_loss, epoch)
+            writer.add_scalar("Epoch/Val_Acc", epoch_val_acc, epoch)
+
+        # --- Weight + Grad Histograms ---
+        for name, param in model.named_parameters():
+            writer.add_histogram(f"Weights/{name}", param, epoch)
+            if param.grad is not None:
+                writer.add_histogram(f"Grads/{name}", param.grad, epoch)
+
+        for name, param in model.named_parameters():
+            writer.add_histogram(f"Weights/{name}", param, epoch)
+            if param.grad is not None:
+                writer.add_histogram(f"Grads/{name}", param.grad, epoch)
+
         # Save checkpoint for every epoch
         torch.save(model.state_dict(), save_dir / f"{save_prefix}_epoch_{epoch}.pt")
 
@@ -174,6 +219,8 @@ def train_model(
                     )
                     model.load_state_dict(best_weights)
                     break
+
+    writer.close()
 
     return model, history, best_epoch
 
