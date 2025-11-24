@@ -8,6 +8,28 @@ import nibabel as nib
 import mat73
 from scipy.io import loadmat as lm
 import re
+import torch
+
+
+def move_to_device(obj, device):
+    """
+    Recursively moves tensors in a dictionary, list, or tuple to a specified device.
+    """
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    elif isinstance(obj, dict):
+        res = {}
+        for k, v in obj.items():
+            res[k] = move_to_device(v, device)
+        return res
+    elif isinstance(obj, list) or isinstance(obj, tuple):
+        res = []
+        for v in obj:
+            res.append(move_to_device(v, device))
+        return type(obj)(res)
+    else:
+        # Return non-tensor objects as they are (e.g., int, str, etc.)
+        return obj
 
 
 def loadmat(file_path, data=["all"], verbose=False):

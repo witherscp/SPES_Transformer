@@ -6,7 +6,7 @@ import numpy as np
 
 
 class SEEGDataset(Dataset):
-    def __init__(self, subjects=None, data_dir="../data/processed", transform=None):
+    def __init__(self, subjects=None, data_dir="../../data/processed", transform=None):
         """
         Args:
             subjects (list[str], optional): List of subject IDs to include (without .pt extension).

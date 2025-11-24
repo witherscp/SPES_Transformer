@@ -1,9 +1,27 @@
-import torch
+from datetime import datetime
 import time
 from tqdm import tqdm
-from torch import nn
+import random
 from pathlib import Path
 from loguru import logger
+from argparse import ArgumentParser
+
+import numpy as np
+import torch
+from torch import nn
+from torch.utils.data import DataLoader, Subset
+import torch.optim as optim
+
+from src.utils import load_yaml, move_to_device
+from src.datasets.seeg_dataset import SEEGDataset
+from src.models.model import SEEGFusionModel, BaselineModel
+from src.training.evaluate import evaluate_model
+
+SEED = 42
+torch.manual_seed(SEED)
+random.seed(SEED)
+g = torch.Generator()
+g.manual_seed(SEED)
 
 
 def train_model(
@@ -160,22 +178,216 @@ def train_model(
     return model, history, best_epoch
 
 
-def move_to_device(obj, device):
+def compute_class_weights(train_ds):
+    labels = np.array([v[1] for v in train_ds])
+    class_sample_count = np.array([len(np.where(labels == t)[0]) for t in np.unique(labels)])
+    weight = class_sample_count.sum() / class_sample_count
+    return torch.from_numpy(weight).float()
+
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
+def get_subject_indices(dataset, subj_list):
+    """Get indices of samples in the dataset that belong to specified subjects.
+
+    Args:
+        dataset (_type_): _description_
+        subj_list (list): list of subject identifiers to select
+
+    Returns:
+        list: list of indices corresponding to the specified subjects
     """
-    Recursively moves tensors in a dictionary, list, or tuple to a specified device.
-    """
-    if torch.is_tensor(obj):
-        return obj.to(device)
-    elif isinstance(obj, dict):
-        res = {}
-        for k, v in obj.items():
-            res[k] = move_to_device(v, device)
-        return res
-    elif isinstance(obj, list) or isinstance(obj, tuple):
-        res = []
-        for v in obj:
-            res.append(move_to_device(v, device))
-        return type(obj)(res)
+    return [i for i, s in enumerate(dataset.data) if s["subject"] in subj_list]
+
+
+def main(model_type, **kwargs):
+
+    # Load dataset
+    sz_free_subjects = [
+        "Epat31",
+        "Epat35",
+        "Epat37",
+        "Epat38",
+        "Spat31",
+        "Spat37",
+        "Spat41",
+        "Spat42",
+    ]
+    if kwargs["Parameters"]["sz_free_only"]:
+        full_dataset = SEEGDataset(subjects=sz_free_subjects)
     else:
-        # Return non-tensor objects as they are (e.g., int, str, etc.)
-        return obj
+        full_dataset = SEEGDataset()
+
+    n_inner_splits = 5
+    val_ratio = kwargs["Parameters"]["val_ratio"]
+    if val_ratio > 0:
+        use_val = True
+    else:
+        use_val = False
+
+    metric_dict = {}
+    for test_subj in full_dataset.subjects:
+        logger.info(f"\n=== Test subject: {test_subj} ===")
+        remaining_subjs = [s for s in full_dataset.subjects if s != test_subj]
+
+        # Outer split: test vs remaining
+        test_idx = get_subject_indices(full_dataset, [test_subj])
+        test_ds = Subset(full_dataset, test_idx)
+
+        # Shuffle remaining subjects so different folds vary
+        random.shuffle(remaining_subjs)
+
+        if use_val:
+            # Create inner splits
+            inner_splits = []
+            # Split based on val_ratio
+            n_val_subjs = int(len(remaining_subjs) * val_ratio)
+            for i in range(n_inner_splits):
+                # rotate subjects for different validation sets
+                if (i + 1) * n_val_subjs > len(remaining_subjs):
+                    val_subjs = remaining_subjs[i * n_val_subjs :]
+                else:
+                    val_subjs = remaining_subjs[i * n_val_subjs : (i + 1) * n_val_subjs]
+                train_subjs = [s for s in remaining_subjs if s not in val_subjs]
+                inner_splits.append((train_subjs, val_subjs))
+        else:
+            inner_splits = [(remaining_subjs, [])]
+
+        # Run inner CV for this test subject
+        for k, (train_subjs, val_subjs) in enumerate(inner_splits):
+            logger.info(f"\nInner split {k+1}: train={train_subjs}, val={val_subjs}")
+
+            train_idx = get_subject_indices(full_dataset, train_subjs)
+            val_idx = get_subject_indices(full_dataset, val_subjs)
+
+            train_ds = Subset(full_dataset, train_idx)
+            val_ds = Subset(full_dataset, val_idx)
+
+            dataloaders = {
+                "train": DataLoader(
+                    train_ds,
+                    batch_size=kwargs["Parameters"]["batch_size"],
+                    shuffle=True,
+                    num_workers=0,
+                    worker_init_fn=seed_worker,
+                    generator=g,
+                ),
+                "val": DataLoader(
+                    val_ds,
+                    batch_size=kwargs["Parameters"]["batch_size"],
+                    shuffle=False,
+                    num_workers=0,
+                    worker_init_fn=seed_worker,
+                    generator=g,
+                ),
+                "test": DataLoader(
+                    test_ds,
+                    batch_size=kwargs["Parameters"]["batch_size"],
+                    shuffle=False,
+                    num_workers=0,
+                    worker_init_fn=seed_worker,
+                    generator=g,
+                ),
+            }
+
+            weights = compute_class_weights(train_ds)
+
+            if model_type == "Fusion":
+                model = SEEGFusionModel(
+                    embed_dim=kwargs["Parameters"]["embed_dim"], n_classes=2, device=device
+                )
+            elif model_type == "Baseline":
+                model = BaselineModel(
+                    embed_dim=kwargs["Parameters"]["embed_dim"],
+                    n_classes=2,
+                    device=device,
+                    stim_model="convergent",
+                    n_elecs=25,
+                    generator=g,
+                )
+            model.to(device)
+
+            optimizer = optim.Adam(model.parameters(), lr=kwargs["Parameters"]["base_lr"])
+            scheduler = optim.lr_scheduler.CyclicLR(
+                optimizer,
+                base_lr=kwargs["Parameters"]["base_lr"],
+                max_lr=kwargs["Parameters"]["max_lr"],
+                step_size_up=kwargs["Parameters"]["step_size_up_down"],
+                step_size_down=kwargs["Parameters"]["step_size_up_down"],
+                cycle_momentum=False,
+            )
+
+            criterion = nn.CrossEntropyLoss(weight=weights.to(device))
+
+            model, history, best_epoch = train_model(
+                model=model,
+                dataloaders=dataloaders,
+                criterion=criterion,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                device=device,
+                save_prefix=f"{test_subj}_model_{model_type}_split_{k+1}",
+                n_epochs=kwargs["Parameters"]["n_epochs"],
+                patience=kwargs["Parameters"]["patience"],
+                n_steps_per_update=kwargs["Parameters"]["n_steps_per_update"],
+                use_val=use_val,
+            )
+
+            logger.success(
+                f"✅ Training completed for test subject {test_subj}, inner split {k+1}. Best epoch: {best_epoch}"
+            )
+
+            metrics = evaluate_model(model, dataloaders["test"], device)
+            metric_dict[f"{test_subj}_split_{k+1}"] = metrics
+
+    logger.success(f"\n=== Summary of metrics across all test subjects and splits ===")
+    for key, value in metric_dict.items():
+        logger.success(f"{key}: {value}")
+
+
+if __name__ == "__main__":
+
+    parser = ArgumentParser(description="Train a model with specified parameters.")
+    parser.add_argument(
+        "-m",
+        "--model",
+        type=str,
+        default="Fusion",
+        help="Model type to train (e.g., 'Fusion' or 'Baseline'). Default is 'Fusion'.",
+    )
+    parser.add_argument(
+        "-l",
+        "--logdir",
+        type=str,
+        default="../logs",
+        help="Directory to save log files. Default is '../logs'.",
+    )
+
+    args = parser.parse_args()
+    model_type = args.model
+    logdir = args.logdir
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Setup logging
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = Path(logdir) / f"train_{model_type}_{timestamp}.log"
+
+    # Configure logger with process ID in format
+    logger.add(
+        log_file,
+        enqueue=True,
+        format="{time:YYYY-MM-DD HH:mm:ss} | PID:{process} | {level} | {message}",
+        mode="w",
+    )
+
+    logger.info(f"Parameters in default.yaml are set as follows:")
+    logger.info(open("../config/default.yaml").read())
+
+    config = load_yaml()
+
+    main(model_type, **config)

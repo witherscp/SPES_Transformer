@@ -1,5 +1,5 @@
 import torch
-from src.training.train import move_to_device
+from src.utils import move_to_device
 from loguru import logger
 import torch
 import numpy as np
@@ -66,6 +66,6 @@ def evaluate_model(model, dataloader, device):
         "optimal_threshold": best_threshold,
     }
 
-    logger.info(metrics)
+    logger.success(metrics)
 
     return metrics
