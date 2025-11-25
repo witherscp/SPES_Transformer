@@ -2,6 +2,7 @@ Paths:
   # Full paths to folders
   subj_seeg_path: "/mnt/ernie_main/000_Data/SEEG/SEEG_EyesClosed_RestingState/data/$SUBJ"
   subj_preproc_path: "/mnt/ernie_main/000_Data/SPES/data/preprocessed/$SUBJ"
+  tb_logs_path: "/home/withercp/Documents/dev/SPES_Transformer/src/tb_logs"
   
   # Full paths to files
   soz_labels_fpath: "/mnt/ernie_main/000_Data/SEEG/SEEG_EyesClosed_RestingState/labels/all_pats_bipole_soz_labels.csv"

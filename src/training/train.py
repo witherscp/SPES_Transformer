@@ -37,6 +37,7 @@ def train_model(
     n_steps_per_update=1,
     patience=2,
     use_val=True,
+    **kwargs
 ):
     """
     Train a model with early stopping and per-epoch checkpoint saving.
@@ -64,7 +65,8 @@ def train_model(
 
     # --- TensorBoard setup ---
     tb_run_name = f"{save_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    writer = SummaryWriter(log_dir=f"../tb_logs/{tb_run_name}")
+
+    writer = SummaryWriter(log_dir=f"{kwargs['Paths']['tb_logs_path']}/{tb_run_name}")
 
     best_val_loss = float("inf")
     best_epoch = 0
@@ -114,7 +116,7 @@ def train_model(
             log_param_stats(model, writer, step)
 
             if (step + 1) % n_steps_per_update == 0:
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
+                # nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
                 optimizer.step()
 
                 if scheduler is not None:
@@ -422,6 +424,7 @@ def main(model_type, **kwargs):
                 patience=kwargs["Parameters"]["patience"],
                 n_steps_per_update=kwargs["Parameters"]["n_steps_per_update"],
                 use_val=use_val,
+                **kwargs
             )
 
             logger.success(
