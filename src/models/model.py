@@ -109,11 +109,7 @@ class SEEGTransformer(nn.Module):
             device
         )
 
-        # # Position embeddings (optional)
-        # self.pos_embed_trials = nn.Parameter(torch.randn(1, n_trials + 1, embed_dim))
-        # self.pos_embed_channels = nn.Parameter(torch.randn(1, n_electrodes + 1, embed_dim))
-
-    def forward(self, x, key_padding_mask=None):
+    def forward(self, x, coords, key_padding_mask=None):
         """
         x: shape [B, n_electrodes, n_trials, n_features (input_dim)]
         """
@@ -142,6 +138,10 @@ class SEEGTransformer(nn.Module):
 
         # ---- Step 2: Cross-channel attention (across electrodes) ----
         electrode_emb = electrode_emb.view(B, n_electrodes, -1)
+
+        # embed position
+        electrode_emb += coords
+
         cls_token2 = self.cls_token2.expand(B, -1, -1)
         channel_seq = torch.cat([cls_token2, electrode_emb], dim=1)
 
@@ -193,6 +193,8 @@ class SEEGFusionModel(nn.Module):
         x_div = inputs["divergent"]  # [B, n_responses, n_trials, n_timepoints]
         conv_padding_mask = inputs["convergent_mask"]  # [B, n_stims, n_trials]
         div_padding_mask = inputs["divergent_mask"]  # [B, n_responses, n_trials]
+        conv_coords = inputs["convergent_coords"]  # [B, n_stims, embed_dim]
+        div_coords = inputs["divergent_coords"]  # [B, n_responses, embed_dim]
 
         # get dimensions from arrays
         B, n_stims, n_trials, n_timepoints = x_conv.shape
@@ -226,8 +228,12 @@ class SEEGFusionModel(nn.Module):
 
         # Create convergent and divergent embeddings through respective transformer blocks
         # output will have shape [B, embed_dim]
-        conv_emb = self.conv_transformer(conv_embeddings, key_padding_mask=conv_padding_mask)
-        div_emb = self.div_transformer(div_embeddings, key_padding_mask=div_padding_mask)
+        conv_emb = self.conv_transformer(
+            conv_embeddings, conv_coords, key_padding_mask=conv_padding_mask
+        )
+        div_emb = self.div_transformer(
+            div_embeddings, div_coords, key_padding_mask=div_padding_mask
+        )
 
         # Join embeddings
         joint_emb = torch.cat([conv_emb, div_emb], dim=1)
