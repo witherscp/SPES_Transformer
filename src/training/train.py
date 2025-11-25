@@ -297,9 +297,19 @@ def main(model_type, **kwargs):
         "Spat41",
         "Spat42",
     ]
+    rapid_tune_subjects = [
+        "Epat38",
+        "Spat48",
+        "Spat55"
+    ]
+
     if kwargs["Parameters"]["sz_free_only"]:
         full_dataset = SEEGDataset(
             subjects=sz_free_subjects, embed_dim=kwargs["Parameters"]["embed_dim"]
+        )
+    elif kwargs["Parameters"]["rapid_tune"]:
+        full_dataset = SEEGDataset(
+            subjects=rapid_tune_subjects, embed_dim=kwargs["Parameters"]["embed_dim"]
         )
     else:
         full_dataset = SEEGDataset(embed_dim=kwargs["Parameters"]["embed_dim"])
