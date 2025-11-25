@@ -114,7 +114,7 @@ def train_model(
             log_param_stats(model, writer, step)
 
             if (step + 1) % n_steps_per_update == 0:
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
                 optimizer.step()
 
                 if scheduler is not None:
@@ -251,14 +251,12 @@ def log_param_stats(model, writer, step):
         )
 
     # Global norms
-    total_param_norm = total_param_norm ** 0.5
-    total_update_norm = total_update_norm ** 0.5
+    total_param_norm = total_param_norm**0.5
+    total_update_norm = total_update_norm**0.5
 
     writer.add_scalar("Global/ParamNorm", total_param_norm, step)
     writer.add_scalar("Global/UpdateNorm", total_update_norm, step)
-    writer.add_scalar("Global/UpdateRatio",
-                      total_update_norm / (total_param_norm + 1e-12),
-                      step)
+    writer.add_scalar("Global/UpdateRatio", total_update_norm / (total_param_norm + 1e-12), step)
 
 
 def seed_worker(worker_id):
@@ -388,9 +386,9 @@ def main(model_type, **kwargs):
             model.to(device)
 
             optimizer = optim.AdamW(
-                model.parameters(), 
+                model.parameters(),
                 lr=kwargs["Parameters"]["base_lr"],
-                weight_decay=kwargs['Parameters']['weight_decay']
+                weight_decay=kwargs["Parameters"]["weight_decay"],
             )
             # scheduler = optim.lr_scheduler.CyclicLR(
             #     optimizer,
@@ -403,11 +401,11 @@ def main(model_type, **kwargs):
             # )
             scheduler = optim.lr_scheduler.OneCycleLR(
                 optimizer=optimizer,
-                max_lr=kwargs['Parameters']['max_lr'],
-                epochs=kwargs['Parameters']['n_epochs'],
-                steps_per_epoch=len(dataloaders['train']),
-                pct_start=kwargs['Parameters']['pct_start'],
-                anneal_strategy='cos'
+                max_lr=kwargs["Parameters"]["max_lr"],
+                epochs=kwargs["Parameters"]["n_epochs"],
+                steps_per_epoch=len(dataloaders["train"]),
+                pct_start=kwargs["Parameters"]["pct_start"],
+                anneal_strategy="cos",
             )
 
             criterion = nn.CrossEntropyLoss(weight=weights.to(device))
@@ -423,7 +421,7 @@ def main(model_type, **kwargs):
                 n_epochs=kwargs["Parameters"]["n_epochs"],
                 patience=kwargs["Parameters"]["patience"],
                 n_steps_per_update=kwargs["Parameters"]["n_steps_per_update"],
-                use_val=use_val
+                use_val=use_val,
             )
 
             logger.success(
