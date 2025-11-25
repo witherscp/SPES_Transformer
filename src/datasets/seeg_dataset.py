@@ -36,6 +36,12 @@ class SEEGDataset(Dataset):
             path = data_dir / f"{subj}.pt"
             subj_data = torch.load(path, weights_only=False)
 
+            logger.info(
+                f"Loading subject {subj}, n_targets={len(subj_data['targets'])}, "
+                f"n_soz = {subj_data['target_labels'].sum()}, n_stim={subj_data['convergent']['data'][0].shape[0]}, "
+                f"n_resp={subj_data['divergent']['data'][0].shape[0]}, "
+            )
+
             # Each subject may have multiple electrodes (targets)
             n_targets = len(subj_data["targets"])
             conv_currents = subj_data["convergent"]["stim_trial_currents"]  # [n_stims, n_trials]
