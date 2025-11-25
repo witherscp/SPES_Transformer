@@ -376,7 +376,10 @@ def main(model_type, **kwargs):
 
             if model_type == "Fusion":
                 model = SEEGFusionModel(
-                    embed_dim=kwargs["Parameters"]["embed_dim"], n_classes=2, device=device
+                    embed_dim=kwargs["Parameters"]["embed_dim"], 
+                    num_layers=kwargs["Parameters"]["num_layers"],
+                    n_classes=2, 
+                    device=device
                 )
             elif model_type == "Baseline":
                 model = BaselineModel(

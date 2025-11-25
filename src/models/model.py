@@ -65,7 +65,7 @@ class TransformerBlock(nn.Module):
 
 # ---------- Core SEEG Transformer for one paradigm ----------
 class SEEGTransformer(nn.Module):
-    def __init__(self, embed_dim=128, n_heads=4, dropout=0.1, num_layers=1, device="cuda"):
+    def __init__(self, embed_dim=128, n_heads=4, dropout=0.1, num_layers=2, device="cuda"):
         super().__init__()
 
         # self.cross_trial = TransformerBlock(embed_dim, n_heads=n_heads)
@@ -171,13 +171,13 @@ class SEEGTransformer(nn.Module):
 
 # ---------- Full Fusion Model ----------
 class SEEGFusionModel(nn.Module):
-    def __init__(self, embed_dim=128, n_classes=2, device="cuda"):
+    def __init__(self, embed_dim=128, num_layers=2, n_classes=2, device="cuda"):
         super().__init__()
 
         self.conv_msresnet = MSResNet(input_channel=1, num_classes=embed_dim, dropout_rate=0.2)
         self.div_msresnet = MSResNet(input_channel=1, num_classes=embed_dim, dropout_rate=0.2)
-        self.conv_transformer = SEEGTransformer(embed_dim=embed_dim, n_heads=4, device=device)
-        self.div_transformer = SEEGTransformer(embed_dim=embed_dim, n_heads=4, device=device)
+        self.conv_transformer = SEEGTransformer(embed_dim=embed_dim, num_layers=num_layers, n_heads=4, device=device)
+        self.div_transformer = SEEGTransformer(embed_dim=embed_dim, num_layers=num_layers, n_heads=4, device=device)
 
         self.classifier = nn.Sequential(
             nn.Linear(embed_dim * 2, embed_dim),
