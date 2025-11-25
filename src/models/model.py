@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torcheeg.transforms import RandomNoise
 
 from src.models.multi_scale_ori import MSResNet
 
@@ -95,11 +96,8 @@ class SEEGTransformer(nn.Module):
         )
         self.channel_encoder = nn.TransformerEncoder(channel_encoder_layer, num_layers=num_layers)
 
-        # # Enable gradient checkpointing for memory efficiency
-        # for m in self.trial_encoder.layers:
-        #     m.gradient_checkpointing = True
-        # for m in self.channel_encoder.layers:
-        #     m.gradient_checkpointing = True
+        # Apply noise for training
+        self.noise = RandomNoise(std=0.1, p=0.5)
 
         # CLS tokens for summarization
         self.cls_token1 = nn.Parameter(nn.init.xavier_normal_(torch.empty(1, 1, embed_dim))).to(
@@ -113,6 +111,10 @@ class SEEGTransformer(nn.Module):
         """
         x: shape [B, n_electrodes, n_trials, n_features (input_dim)]
         """
+
+        # optionally add noise for training
+        if self.training:
+            x = self.noise(eeg=x)["eeg"]
 
         B, n_electrodes, n_trials, n_features = x.shape
 
@@ -176,8 +178,12 @@ class SEEGFusionModel(nn.Module):
 
         self.conv_msresnet = MSResNet(input_channel=1, num_classes=embed_dim, dropout_rate=0.2)
         self.div_msresnet = MSResNet(input_channel=1, num_classes=embed_dim, dropout_rate=0.2)
-        self.conv_transformer = SEEGTransformer(embed_dim=embed_dim, num_layers=num_layers, n_heads=4, device=device)
-        self.div_transformer = SEEGTransformer(embed_dim=embed_dim, num_layers=num_layers, n_heads=4, device=device)
+        self.conv_transformer = SEEGTransformer(
+            embed_dim=embed_dim, num_layers=num_layers, n_heads=4, device=device
+        )
+        self.div_transformer = SEEGTransformer(
+            embed_dim=embed_dim, num_layers=num_layers, n_heads=4, device=device
+        )
 
         self.classifier = nn.Sequential(
             nn.Linear(embed_dim * 2, embed_dim),
