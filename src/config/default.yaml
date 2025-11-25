@@ -21,17 +21,26 @@ Parameters:
   # Preprocessing
   dist_threshold: 20  # Minimum distance (in mm) between stim and recording electrodes for inclusion
 
-  # Training
+  ## Training
+  # Train
   batch_size: 8
-  sz_free_only: false
+  sz_free_only: true
   n_epochs: 30
   n_steps_per_update: 1
   patience: 5
   val_ratio: 0.2
-  base_lr: 0.00001
-  max_lr: 0.0001
-  step_size_up_down: 1000
-  weight_decay: 0.0001
+  use_clipping: true
+  clip_max_norm: 10.0   # only applies if clipping set to true
+
+  # Model
   embed_dim: 128
-  pct_start: 0.2
   num_layers: 4
+
+  # Optimizer
+  weight_decay: 0.0001
+
+  # Scheduler
+  step_size_up_down: 1000
+  base_lr: 0.00003
+  max_lr: 0.0003
+  pct_start: 0.3

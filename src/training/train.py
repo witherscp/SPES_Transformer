@@ -116,7 +116,11 @@ def train_model(
             log_param_stats(model, writer, step)
 
             if (step + 1) % n_steps_per_update == 0:
-                # nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
+                if kwargs['Parameters']['use_clipping']:
+                    nn.utils.clip_grad_norm_(
+                        model.parameters(), 
+                        max_norm=kwargs['Parameters']['clip_max_norm']
+                    )
                 optimizer.step()
 
                 if scheduler is not None:
