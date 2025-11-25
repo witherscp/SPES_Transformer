@@ -438,19 +438,17 @@ def get_mni_coords_dict(subj):
     return mni_coords_dict
 
 
-def calc_euc_distance(subj, chan1, chan2):
+def calc_euc_distance(mni_coords_dict, chan1, chan2):
     """Calculate the Euclidean distance between two channels.
 
     Args:
-        subj (str): The subject identifier.
+        mni_coords_dict (dict): A dictionary mapping channel names to their MNI coordinates as (x, y, z) tuples.
         chan1 (str): The name of the first channel.
         chan2 (str): The name of the second channel.
 
     Returns:
         float: The Euclidean distance between the two channels.
     """
-
-    mni_coords_dict = get_mni_coords_dict(subj)
 
     if chan1 not in mni_coords_dict.keys():
         logger.error(f"Channel {chan1} not found in coordinates DataFrame.")

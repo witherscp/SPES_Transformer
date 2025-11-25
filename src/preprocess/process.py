@@ -35,8 +35,8 @@ def build_subject_pt(subj, **kwargs):
     # # get dks broad region dict
     # dks_broad_region_dict = get_dks_broad_region_dict(subj)
 
-    # # get mni coords dict
-    # mni_coords_dict = get_mni_coords_dict(subj)
+    # get mni coords dict
+    mni_coords_dict = get_mni_coords_dict(subj)
 
     ## ------ Load and format pulse data ------
 
@@ -47,6 +47,7 @@ def build_subject_pt(subj, **kwargs):
     data_dict = combine_pulses(
         pulse_paths=pulse_paths,
         possible_targets=soz_label_dict.keys(),  # most restrictive set of electrodes (must know for electrode to be target)
+        mni_coords_dict=mni_coords_dict,
         dist_threshold=kwargs["Parameters"][
             "dist_threshold"
         ],  # only consider electrodes greater than 20mm from stim
@@ -67,12 +68,18 @@ def build_subject_pt(subj, **kwargs):
             "stim_trial_currents": torch.tensor(
                 data_dict["convergent"]["stim_trial_currents"], dtype=torch.float32
             ),
+            "stim_trial_coords": torch.tensor(
+                data_dict["convergent"]["stim_trial_coords"], dtype=torch.float32
+            ),
         },
         "divergent": {
             "data": torch.tensor(data_dict["divergent"]["data"], dtype=torch.float32),
             "response_names": data_dict["divergent"]["response_names"],
             "target_trial_currents": torch.tensor(
                 data_dict["divergent"]["target_trial_currents"], dtype=torch.float32
+            ),
+            "response_trial_coords": torch.tensor(
+                data_dict["divergent"]["response_trial_coords"], dtype=torch.float32
             ),
         },
         "target_labels": torch.tensor(target_labels, dtype=torch.long),
@@ -83,7 +90,7 @@ def build_subject_pt(subj, **kwargs):
     return True
 
 
-def combine_pulses(pulse_paths, possible_targets, dist_threshold=20):
+def combine_pulses(pulse_paths, possible_targets, mni_coords_dict, dist_threshold=20):
     """
     Combine convergent and divergent pulse data from multiple .mat files.
     Args:
@@ -137,7 +144,8 @@ def combine_pulses(pulse_paths, possible_targets, dist_threshold=20):
             (n_targets, n_stims, n_trials, n_timepoints), np.nan
         ),  # [n_targets, n_stims, n_trials, n_timepoints]
         "stim_names": np.array(unique_stims),  # [n_stims]
-        "stim_trial_currents": np.full((n_stims, n_trials), np.nan),  # [n_stims, n_trials]
+        "stim_trial_currents": np.full((n_stims, n_trials), np.nan),  # [n_stims, n_trials],
+        "stim_trial_coords": np.array([mni_coords_dict[s] for s in unique_stims]),  # [n_stims, 3]
     }
 
     divergent = {
@@ -146,12 +154,17 @@ def combine_pulses(pulse_paths, possible_targets, dist_threshold=20):
         ),  # [n_targets, n_responses, n_trials, n_timepoints]
         "response_names": np.array(response_names),  # [n_responses]
         "target_trial_currents": np.full((n_targets, n_trials), np.nan),  # [n_targets, n_trials]
+        "response_trial_coords": np.array(
+            [mni_coords_dict[r] for r in response_names]
+        ),  # [n_responses, 3]
     }
 
     for stim_i, stim in tqdm(enumerate(unique_stims), total=n_stims):
         logger.info(f"Working on stim electrode - {stim}")
         stim_paths = [path for path in pulse_paths if f"_{stim}_" in path.name]
-        dists_stim_to_targets = np.array([calc_euc_distance(subj, stim, t) for t in targets])
+        dists_stim_to_targets = np.array(
+            [calc_euc_distance(mni_coords_dict, stim, t) for t in targets]
+        )
 
         trial_idx = -1
         for pulse_path in stim_paths:
@@ -194,7 +207,7 @@ def combine_pulses(pulse_paths, possible_targets, dist_threshold=20):
             # Extract divergent data
             if stim in targets:
                 dists_stim_to_responses = np.array(
-                    [calc_euc_distance(subj, stim, r) for r in response_names]
+                    [calc_euc_distance(mni_coords_dict, stim, r) for r in response_names]
                 )
                 response_mask = (
                     dists_stim_to_responses >= dist_threshold

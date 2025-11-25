@@ -292,9 +292,11 @@ def main(model_type, **kwargs):
         "Spat42",
     ]
     if kwargs["Parameters"]["sz_free_only"]:
-        full_dataset = SEEGDataset(subjects=sz_free_subjects)
+        full_dataset = SEEGDataset(
+            subjects=sz_free_subjects, embed_dim=kwargs["Parameters"]["embed_dim"]
+        )
     else:
-        full_dataset = SEEGDataset()
+        full_dataset = SEEGDataset(embed_dim=kwargs["Parameters"]["embed_dim"])
 
     n_inner_splits = 5
     val_ratio = kwargs["Parameters"]["val_ratio"]
