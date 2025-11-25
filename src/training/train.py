@@ -66,32 +66,6 @@ def train_model(
     tb_run_name = f"{save_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     writer = SummaryWriter(log_dir=f"../tb_logs/{tb_run_name}")
 
-    # Log model graph using one example batch (safe handling for dict inputs)
-    try:
-        example_inputs, _ = next(iter(dataloaders["train"]))
-        # If input is a dict, wrap model so add_graph can receive a tuple of tensors
-        if isinstance(example_inputs, dict):
-            keys = list(example_inputs.keys())
-            example_tensors = tuple(move_to_device(example_inputs[k], device) for k in keys)
-
-            class _GraphWrapper(nn.Module):
-                def __init__(self, model, keys):
-                    super().__init__()
-                    self.model = model
-                    self.keys = keys
-
-                def forward(self, *args):
-                    inp = {k: v for k, v in zip(self.keys, args)}
-                    return self.model(inp)
-
-            wrapper = _GraphWrapper(model, keys)
-            writer.add_graph(wrapper, example_tensors)
-        else:
-            example_inputs = move_to_device(example_inputs, device)
-            writer.add_graph(model, example_inputs)
-    except Exception as e:
-        logger.warning(f"Could not log graph: {e}")
-
     best_val_loss = float("inf")
     best_epoch = 0
     epochs_no_improve = 0
@@ -137,8 +111,10 @@ def train_model(
             _, preds = torch.max(outputs, 1)
             train_correct += torch.sum(preds == labels.data)
 
+            log_param_stats(model, writer, step)
+
             if (step + 1) % n_steps_per_update == 0:
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
                 optimizer.step()
 
                 if scheduler is not None:
@@ -231,6 +207,9 @@ def train_model(
                     )
                     model.load_state_dict(best_weights)
                     break
+        else:
+            # assume most recent epoch is best
+            best_epoch = epoch
 
     writer.close()
 
@@ -242,6 +221,44 @@ def compute_class_weights(train_ds):
     class_sample_count = np.array([len(np.where(labels == t)[0]) for t in np.unique(labels)])
     weight = class_sample_count.sum() / class_sample_count
     return torch.from_numpy(weight).float()
+
+
+def log_param_stats(model, writer, step):
+    """Logs per-parameter and global parameter norms and update norms."""
+    total_param_norm = 0.0
+    total_update_norm = 0.0
+
+    for name, p in model.named_parameters():
+        if p.grad is None:
+            continue
+
+        # Parameter norm
+        param_norm = p.data.norm(2)
+        # Update norm (gradient norm scaled by LR later)
+        update_norm = p.grad.data.norm(2)
+
+        # Accumulate for overall stats
+        total_param_norm += param_norm.item() ** 2
+        total_update_norm += update_norm.item() ** 2
+
+        # Per-parameter logging
+        writer.add_scalar(f"ParamNorm/{name}", param_norm.item(), step)
+        writer.add_scalar(f"UpdateNorm/{name}", update_norm.item(), step)
+        writer.add_scalar(
+            f"UpdateRatio/{name}",
+            (update_norm / (param_norm + 1e-12)).item(),
+            step,
+        )
+
+    # Global norms
+    total_param_norm = total_param_norm ** 0.5
+    total_update_norm = total_update_norm ** 0.5
+
+    writer.add_scalar("Global/ParamNorm", total_param_norm, step)
+    writer.add_scalar("Global/UpdateNorm", total_update_norm, step)
+    writer.add_scalar("Global/UpdateRatio",
+                      total_update_norm / (total_param_norm + 1e-12),
+                      step)
 
 
 def seed_worker(worker_id):
@@ -370,19 +387,32 @@ def main(model_type, **kwargs):
                 )
             model.to(device)
 
-            optimizer = optim.Adam(model.parameters(), lr=kwargs["Parameters"]["base_lr"])
-            scheduler = optim.lr_scheduler.CyclicLR(
-                optimizer,
-                base_lr=kwargs["Parameters"]["base_lr"],
-                max_lr=kwargs["Parameters"]["max_lr"],
-                step_size_up=kwargs["Parameters"]["step_size_up_down"],
-                step_size_down=kwargs["Parameters"]["step_size_up_down"],
-                cycle_momentum=False,
+            optimizer = optim.AdamW(
+                model.parameters(), 
+                lr=kwargs["Parameters"]["base_lr"],
+                weight_decay=kwargs['Parameters']['weight_decay']
+            )
+            # scheduler = optim.lr_scheduler.CyclicLR(
+            #     optimizer,
+            #     base_lr=kwargs["Parameters"]["base_lr"],
+            #     max_lr=kwargs["Parameters"]["max_lr"],
+            #     step_size_up=kwargs["Parameters"]["step_size_up_down"],
+            #     step_size_down=kwargs["Parameters"]["step_size_up_down"],
+            #     cycle_momentum=False,
+            #     mode='triangular'
+            # )
+            scheduler = optim.lr_scheduler.OneCycleLR(
+                optimizer=optimizer,
+                max_lr=kwargs['Parameters']['max_lr'],
+                epochs=kwargs['Parameters']['n_epochs'],
+                steps_per_epoch=len(dataloaders['train']),
+                pct_start=kwargs['Parameters']['pct_start'],
+                anneal_strategy='cos'
             )
 
             criterion = nn.CrossEntropyLoss(weight=weights.to(device))
 
-            model, history, best_epoch = train_model(
+            model, _, best_epoch = train_model(
                 model=model,
                 dataloaders=dataloaders,
                 criterion=criterion,
@@ -393,7 +423,7 @@ def main(model_type, **kwargs):
                 n_epochs=kwargs["Parameters"]["n_epochs"],
                 patience=kwargs["Parameters"]["patience"],
                 n_steps_per_update=kwargs["Parameters"]["n_steps_per_update"],
-                use_val=use_val,
+                use_val=use_val
             )
 
             logger.success(
