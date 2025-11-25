@@ -4,4 +4,4 @@ data/
 experiments/
 *.egg-info/
 src/logs/
-src/tb_logs/
+src/tb_logs
