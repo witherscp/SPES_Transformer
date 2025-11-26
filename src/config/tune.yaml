@@ -1,15 +1,28 @@
-# Subject-level proxy tuning params
-subjects:
+# Subjects by phase
+subjects_phase1:
   - Epat38
   - Spat48
   - Spat55
-
-n_folds: 3
+subjects_phase2:
+  - Epat38
+  - Spat31
+  - Epat31
+  - Spat48
+  - Epat37
+  - Spat49
+  - Spat53
+  - Epat35
+  - Spat55
+  - Spat52
 
 # Fixed training settings for tuning
-batch_size: 4
-n_epochs: 20
+batch_size: 6
+n_epochs: 15
 patience: 3
+n_folds: 5
+val_ratio: 0.2
+n_trials: 50
+top_k: 5
 
 # Search spaces
 search:
