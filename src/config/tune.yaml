@@ -16,13 +16,14 @@ subjects_phase2:
   - Spat52
 
 # Fixed training settings for tuning
-batch_size: 6
+batch_size: 4
 n_epochs: 15
 patience: 3
 n_folds: 5
 val_ratio: 0.2
-n_trials: 50
+n_trials: 150
 top_k: 5
+min_resource: 2
 
 # Search spaces
 search:

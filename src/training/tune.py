@@ -97,7 +97,7 @@ def objective_for_subjects(
 
     fold_best_losses = []
 
-    fold_splits = get_splits()
+    fold_splits = get_splits(subjects, val_ratio=tune_cfg['val_ratio'])
 
     # iterate validation subjects (K-fold using provided list)
     folds_to_run = min(n_folds, len(fold_splits))
@@ -208,6 +208,7 @@ def objective_for_subjects(
                     val_count += n_samples
 
             epoch_val_loss = val_loss_total / val_count
+            logger.info(f"Epoch #{epoch} - Validation loss: {epoch_val_loss}")
 
             # Report the epoch metric to Optuna with a monotonic step counter
             report_step += 1
@@ -254,7 +255,11 @@ def main():
 
     study = optuna.create_study(
         direction="minimize",
-        pruner=SuccessiveHalvingPruner(min_resource=1, reduction_factor=3, bootstrap_count=1),
+        pruner=SuccessiveHalvingPruner(
+            min_resource=tune_cfg['min_resource'], 
+            reduction_factor=3, 
+            bootstrap_count=1
+        ),
     )
 
     logger.info("Starting Phase 1 (small proxy) tuning...")
