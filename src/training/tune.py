@@ -60,7 +60,7 @@ def objective(trial, tune_cfg, device):
     fold_metrics = []
 
     # Load dataset restricted to proxy subjects
-    full_dataset = SEEGDataset(subjects=tune_cfg["subjects"], embed_dim=embed_dim)
+    full_dataset = SEEGDataset(subjects=tune_cfg["subjects"], embed_dim=embed_dim, verbose=False)
 
     # K-fold proxy tuning: treat each proxy subject as val once
     for val_subj in proxy_subjects[:n_folds]:
