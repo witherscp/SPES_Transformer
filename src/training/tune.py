@@ -175,7 +175,7 @@ def main():
     study = optuna.create_study(
         direction="minimize",
         pruner=SuccessiveHalvingPruner(
-            min_resource="auto",
+            min_resource=1,
             reduction_factor=3,
             bootstrap_count=1,
         ),
