@@ -173,16 +173,16 @@ class SEEGTransformer(nn.Module):
 
 # ---------- Full Fusion Model ----------
 class SEEGFusionModel(nn.Module):
-    def __init__(self, embed_dim=128, num_layers=2, n_classes=2, device="cuda"):
+    def __init__(self, embed_dim=128, num_layers=2, n_heads=4, n_classes=2, device="cuda"):
         super().__init__()
 
         self.conv_msresnet = MSResNet(input_channel=1, num_classes=embed_dim, dropout_rate=0.2)
         self.div_msresnet = MSResNet(input_channel=1, num_classes=embed_dim, dropout_rate=0.2)
         self.conv_transformer = SEEGTransformer(
-            embed_dim=embed_dim, num_layers=num_layers, n_heads=4, device=device
+            embed_dim=embed_dim, num_layers=num_layers, n_heads=n_heads, device=device
         )
         self.div_transformer = SEEGTransformer(
-            embed_dim=embed_dim, num_layers=num_layers, n_heads=4, device=device
+            embed_dim=embed_dim, num_layers=num_layers, n_heads=n_heads, device=device
         )
 
         self.classifier = nn.Sequential(

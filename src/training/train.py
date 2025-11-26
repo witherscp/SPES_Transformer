@@ -37,7 +37,7 @@ def train_model(
     n_steps_per_update=1,
     patience=2,
     use_val=True,
-    **kwargs
+    **kwargs,
 ):
     """
     Train a model with early stopping and per-epoch checkpoint saving.
@@ -116,10 +116,9 @@ def train_model(
             log_param_stats(model, writer, step)
 
             if (step + 1) % n_steps_per_update == 0:
-                if kwargs['Parameters']['use_clipping']:
+                if kwargs["Parameters"]["use_clipping"]:
                     nn.utils.clip_grad_norm_(
-                        model.parameters(), 
-                        max_norm=kwargs['Parameters']['clip_max_norm']
+                        model.parameters(), max_norm=kwargs["Parameters"]["clip_max_norm"]
                     )
                 optimizer.step()
 
@@ -297,19 +296,10 @@ def main(model_type, **kwargs):
         "Spat41",
         "Spat42",
     ]
-    rapid_tune_subjects = [
-        "Epat38",
-        "Spat48",
-        "Spat55"
-    ]
 
     if kwargs["Parameters"]["sz_free_only"]:
         full_dataset = SEEGDataset(
             subjects=sz_free_subjects, embed_dim=kwargs["Parameters"]["embed_dim"]
-        )
-    elif kwargs["Parameters"]["rapid_tune"]:
-        full_dataset = SEEGDataset(
-            subjects=rapid_tune_subjects, embed_dim=kwargs["Parameters"]["embed_dim"]
         )
     else:
         full_dataset = SEEGDataset(embed_dim=kwargs["Parameters"]["embed_dim"])
@@ -390,10 +380,10 @@ def main(model_type, **kwargs):
 
             if model_type == "Fusion":
                 model = SEEGFusionModel(
-                    embed_dim=kwargs["Parameters"]["embed_dim"], 
+                    embed_dim=kwargs["Parameters"]["embed_dim"],
                     num_layers=kwargs["Parameters"]["num_layers"],
-                    n_classes=2, 
-                    device=device
+                    n_classes=2,
+                    device=device,
                 )
             elif model_type == "Baseline":
                 model = BaselineModel(
@@ -443,7 +433,7 @@ def main(model_type, **kwargs):
                 patience=kwargs["Parameters"]["patience"],
                 n_steps_per_update=kwargs["Parameters"]["n_steps_per_update"],
                 use_val=use_val,
-                **kwargs
+                **kwargs,
             )
 
             logger.success(

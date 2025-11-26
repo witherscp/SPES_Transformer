@@ -1,0 +1,49 @@
+# Subject-level proxy tuning params
+subjects:
+  - Epat38
+  - Spat48
+  - Spat55
+
+n_folds: 3
+
+# Fixed training settings for tuning
+batch_size: 4
+n_epochs: 20
+patience: 3
+
+# Search spaces
+search:
+  embed_dim:
+    type: int
+    low: 64
+    high: 256
+    step: 64
+
+  num_layers:
+    type: int
+    low: 1
+    high: 6
+
+  n_heads:
+    type: categorical
+    choices: [2, 4, 8]
+
+  weight_decay:
+    type: loguniform
+    low: 1.0e-5
+    high: 1.0e-3
+
+  base_lr:
+    type: loguniform
+    low: 1.0e-6
+    high: 3.0e-4
+
+  max_lr:
+    type: loguniform
+    low: 5.0e-5
+    high: 5.0e-3
+
+  pct_start:
+    type: uniform
+    low: 0.1
+    high: 0.5
