@@ -81,18 +81,20 @@ def objective_for_subjects(
             trial_params[hp_name] = suggest_from_cfg(trial, hp_name, hp_cfg)
     trial.set_user_attr("trial_params", trial_params)
 
+    trial_params['max_lr'] = trial.suggest_float(
+        "max_lr",
+        low=(base_lr + 1e-12),  # smallest possible margin above base_lr
+        high=tune_cfg["search"]["max_lr"]["high"],
+        log=tune_cfg["search"]["max_lr"]["type"] == "loguniform"
+    )
+
     # extract hyperparameters
     embed_dim = trial_params["embed_dim"]
     num_layers = trial_params["num_layers"]
     n_heads = trial_params["n_heads"]
     weight_decay = trial_params["weight_decay"]
     base_lr = trial_params["base_lr"]
-    max_lr = trial.suggest_float(
-        "max_lr",
-        low=(base_lr + 1e-12),  # smallest possible margin above base_lr
-        high=tune_cfg["search"]["max_lr"]["high"],
-        log=tune_cfg["search"]["max_lr"]["type"] == "loguniform"
-    )
+    max_lr = trial_params['max_lr']
     pct_start = trial_params["pct_start"]
 
     # Load dataset once per trial (with requested embed_dim)
