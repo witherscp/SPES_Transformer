@@ -77,16 +77,17 @@ def objective_for_subjects(
     # sample hyperparameters dynamically
     trial_params = {}
     for hp_name, hp_cfg in search.items():
-        if hp_name != 'max_lr':
+        if hp_name != "max_lr":
             trial_params[hp_name] = suggest_from_cfg(trial, hp_name, hp_cfg)
-    trial.set_user_attr("trial_params", trial_params)
 
-    trial_params['max_lr'] = trial.suggest_float(
+    trial_params["max_lr"] = trial.suggest_float(
         "max_lr",
-        low=(base_lr + 1e-12),  # smallest possible margin above base_lr
+        low=(trial_params["base_lr"] + 1e-12),  # smallest possible margin above base_lr
         high=tune_cfg["search"]["max_lr"]["high"],
-        log=tune_cfg["search"]["max_lr"]["type"] == "loguniform"
+        log=tune_cfg["search"]["max_lr"]["type"] == "loguniform",
     )
+
+    trial.set_user_attr("trial_params", trial_params)
 
     # extract hyperparameters
     embed_dim = trial_params["embed_dim"]
@@ -94,7 +95,7 @@ def objective_for_subjects(
     n_heads = trial_params["n_heads"]
     weight_decay = trial_params["weight_decay"]
     base_lr = trial_params["base_lr"]
-    max_lr = trial_params['max_lr']
+    max_lr = trial_params["max_lr"]
     pct_start = trial_params["pct_start"]
 
     # Load dataset once per trial (with requested embed_dim)
@@ -214,7 +215,7 @@ def objective_for_subjects(
                     val_count += n_samples
 
             epoch_val_loss = val_loss_total / val_count
-            logger.info(f'Report step {report_step + 1}: val loss - {epoch_val_loss}')
+            logger.info(f"Report step {report_step + 1}: val loss - {epoch_val_loss}")
 
             # Report the epoch metric to Optuna with a monotonic step counter
             report_step += 1
@@ -345,7 +346,6 @@ def run_phase2(top_params_list, tune_cfg, out_dir, device, timestamp):
         fixed_trial = FixedTrial(params)
 
         try:
-            # This call runs fresh Phase-2 evaluation; should not call trial.report() internally on old steps
             val = objective_for_subjects(fixed_trial, subjects_phase2, tune_cfg, device)
         except optuna.exceptions.TrialPruned:
             val = float("inf")
