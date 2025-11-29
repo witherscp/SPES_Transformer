@@ -25,10 +25,10 @@ Parameters:
   # Train
   batch_size: 6
   sz_free_only: false
-  n_epochs: 20
+  n_epochs: 15
   n_steps_per_update: 1
   patience: 3
-  val_ratio: 0.2
+  val_ratio: 0
   use_clipping: false
   clip_max_norm: 10.0   # only applies if clipping set to true
 
