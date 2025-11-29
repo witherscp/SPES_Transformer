@@ -382,6 +382,7 @@ def main(model_type, **kwargs):
                 model = SEEGFusionModel(
                     embed_dim=kwargs["Parameters"]["embed_dim"],
                     num_layers=kwargs["Parameters"]["num_layers"],
+                    n_heads=kwargs["Parameters"]["n_heads"],
                     n_classes=2,
                     device=device,
                 )
@@ -401,15 +402,7 @@ def main(model_type, **kwargs):
                 lr=kwargs["Parameters"]["base_lr"],
                 weight_decay=kwargs["Parameters"]["weight_decay"],
             )
-            # scheduler = optim.lr_scheduler.CyclicLR(
-            #     optimizer,
-            #     base_lr=kwargs["Parameters"]["base_lr"],
-            #     max_lr=kwargs["Parameters"]["max_lr"],
-            #     step_size_up=kwargs["Parameters"]["step_size_up_down"],
-            #     step_size_down=kwargs["Parameters"]["step_size_up_down"],
-            #     cycle_momentum=False,
-            #     mode='triangular'
-            # )
+
             scheduler = optim.lr_scheduler.OneCycleLR(
                 optimizer=optimizer,
                 max_lr=kwargs["Parameters"]["max_lr"],
