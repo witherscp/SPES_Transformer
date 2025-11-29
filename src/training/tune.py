@@ -409,7 +409,7 @@ if __name__ == "__main__":
 
     # Setup logging
     if phase1_file:
-        timestamp = phase1_file.split("_")[-1]
+        timestamp = phase1_file.split("_")[-1].split('.')[0]
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = logdir / f"tune_{timestamp}.log"
