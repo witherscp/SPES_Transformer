@@ -23,24 +23,24 @@ Parameters:
 
   ## Training
   # Train
-  batch_size: 8
+  batch_size: 6
   sz_free_only: false
-  n_epochs: 30
+  n_epochs: 20
   n_steps_per_update: 1
-  patience: 5
+  patience: 3
   val_ratio: 0.2
-  use_clipping: true
+  use_clipping: false
   clip_max_norm: 10.0   # only applies if clipping set to true
 
   # Model
-  embed_dim: 128
-  num_layers: 4
+  embed_dim: 192
+  num_layers: 5
+  n_heads: 4
 
   # Optimizer
-  weight_decay: 0.0001
+  weight_decay: 0.0002012915968425392
 
   # Scheduler
-  step_size_up_down: 1000
-  base_lr: 0.00003
-  max_lr: 0.0003
-  pct_start: 0.3
+  base_lr: 1.9947771573336754e-05
+  max_lr: 8.774492933643487e-05
+  pct_start: 0.4314841606163928
