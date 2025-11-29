@@ -103,7 +103,7 @@ def objective_for_subjects(
 
     fold_best_losses = []
 
-    fold_splits = get_splits(subjects, val_ratio=tune_cfg['val_ratio'])
+    fold_splits = get_splits(subjects, val_ratio=tune_cfg["val_ratio"])
 
     # iterate validation subjects (K-fold using provided list)
     folds_to_run = min(n_folds, len(fold_splits))
@@ -245,24 +245,52 @@ def objective_for_subjects(
     return float(np.mean(fold_best_losses))
 
 
-def main():
+def load_phase1(phase1_file, tune_cfg, out_dir):
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Device: {device}")
+    logger.info(f"phase1_file provided. Loading study and running Phase 2 only...")
 
-    tune_cfg = load_yaml("src/config/tune.yaml")
+    phase1_fpath = out_dir / phase1_file
+    try:
+        study = joblib.load(phase1_fpath)
+        logger.success(f"Loaded Optuna study (phase 1) from {phase1_file}")
+    except Exception as e:
+        logger.error(f"Failed to load phase1_file: {e}")
+        return
+
+    # Extract completed trials from the loaded study
+    finished_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    if not finished_trials:
+        logger.warning("No completed trials found in study. Cannot run Phase 2.")
+        return
+
+    # Sort by best (lowest loss)
+    finished_trials = sorted(finished_trials, key=lambda t: t.value)
+
+    # Build Phase-1 leaderboard entries (top-K)
+
+    top_k = tune_cfg["top_k"]
+    top_trials = finished_trials[: min(len(finished_trials), top_k)]
+    top_params_list = []
+    for t in top_trials:
+        # Prefer stored search-space suggestions from user_attrs, fallback to Optuna params
+        params = t.user_attrs.get("trial_params", t.params)
+        top_params_list.append({"trial_number": t.number, "value": t.value, "params": params})
+
+    logger.success(f"Rebuilt Phase-1 top_params_list.")
+
+    return top_params_list
+
+
+def run_phase1(tune_cfg, out_dir, device, timestamp):
 
     subjects_phase1 = tune_cfg["subjects_phase1"]
-    subjects_phase2 = tune_cfg["subjects_phase2"]
     n_trials = tune_cfg["n_trials"]
     top_k = tune_cfg["top_k"]
 
     study = optuna.create_study(
         direction="minimize",
         pruner=SuccessiveHalvingPruner(
-            min_resource=tune_cfg['min_resource'], 
-            reduction_factor=3, 
-            bootstrap_count=1
+            min_resource=tune_cfg["min_resource"], reduction_factor=3, bootstrap_count=1
         ),
     )
 
@@ -277,8 +305,7 @@ def main():
     logger.success(f"Phase 1 complete. Best value: {study.best_value}")
 
     # save study
-    out_dir = Path("../experiments")
-    study_path = out_dir / "optuna_study_phase1.pkl"
+    study_path = out_dir / f"optuna_study_phase1_{timestamp}.pkl"
     try:
         joblib.dump(study, study_path)
         logger.success(f"Saved study to {study_path}")
@@ -296,39 +323,62 @@ def main():
         params = t.user_attrs.get("trial_params", t.params)
         top_params_list.append({"trial_number": t.number, "value": t.value, "params": params})
 
-    with open(out_dir / "phase1_top_params.yaml", "w") as f:
+    with open(out_dir / f"phase1_top_params_{timestamp}.yaml", "w") as f:
         yaml.safe_dump(top_params_list, f)
 
     logger.success(f"Phase 1 top-{len(top_params_list)} saved.")
 
-    # Phase 2: re-evaluate top_k on larger cohort, if provided
-    if subjects_phase2:
-        logger.info("Starting Phase 2: re-evaluating top candidates on larger cohort...")
-        phase2_results = []
-        for entry in top_params_list:
-            params = entry["params"]
-            # Build a FixedTrial from params so we can call objective_for_subjects (it will use suggest_from_cfg but we pass FixedTrial)
-            # FixedTrial expects a mapping from names -> values. Use trial.set_user_attr earlier so trial_params exist.
-            fixed_trial = FixedTrial(params)
-            try:
-                val = objective_for_subjects(fixed_trial, subjects_phase2, tune_cfg, device)
-            except optuna.exceptions.TrialPruned:
-                val = float("inf")
-            phase2_results.append({"params": params, "value_on_phase2": val})
+    return top_params_list
 
-        # sort ascending (minimize)
-        phase2_results = sorted(phase2_results, key=lambda x: x["value_on_phase2"])
-        with open(out_dir / "phase2_results.yaml", "w") as f:
-            yaml.safe_dump(phase2_results, f)
-        logger.success("Phase 2 complete. Results written to experiments/phase2_results.yaml")
 
+def run_phase2(top_params_list, tune_cfg, out_dir, device, timestamp):
+
+    subjects_phase2 = tune_cfg["subjects_phase2"]
+
+    # Run Phase-2 evaluations on larger cohort
+    logger.info("Starting Phase 2: evaluating loaded top-K candidates on larger cohort...")
+    phase2_results = []
+    for entry in top_params_list:
+        params = entry["params"]
+        fixed_trial = FixedTrial(params)
+
+        try:
+            # This call runs fresh Phase-2 evaluation; should not call trial.report() internally on old steps
+            val = objective_for_subjects(fixed_trial, subjects_phase2, tune_cfg, device)
+        except optuna.exceptions.TrialPruned:
+            val = float("inf")
+        except Exception as e:
+            logger.error(f"Phase 2 eval crash on trial {entry['trial_number']}: {e}")
+            val = float("inf")
+
+        phase2_results.append({"params": params, "value_on_phase2": val})
+
+    # Sort by Phase-2 performance
+    phase2_results = sorted(phase2_results, key=lambda x: x["value_on_phase2"])
+
+    with open(out_dir / f"phase2_results_{timestamp}.yaml", "w") as f:
+        yaml.safe_dump(phase2_results, f)
+
+    logger.success(f"Phase 2 complete. Results saved to phase2_results_{timestamp}.yaml")
+    return
+
+
+def main(timestamp, phase1_file=None):
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Device: {device}")
+
+    tune_cfg = load_yaml("src/config/tune.yaml")
+
+    out_dir = Path("../experiments")
+    out_dir.mkdir(exist_ok=True, parents=True)
+
+    if phase1_file:
+        top_params_list = load_phase1(phase1_file, tune_cfg, out_dir)
     else:
-        logger.warning("No subjects_phase2 defined in tune_cfg; skipping Phase 2.")
+        top_params_list = run_phase1(tune_cfg, out_dir, device, timestamp)
 
-    # # Phase 3 scaffold: final evaluation on full LOO. We don't run it automatically here because it is expensive.
-    # logger.info("Phase 3 (full LOO) is not automatically executed by this script.")
-    # logger.info("To run Phase 3, pick top candidates from phase2_results.yaml and call your full LOO pipeline with those params.")
-    # logger.info("Done.")
+    run_phase2(top_params_list, tune_cfg, out_dir, device, timestamp)
 
 
 if __name__ == "__main__":
@@ -341,15 +391,25 @@ if __name__ == "__main__":
         default="../logs",
         help="Directory to save log files. Default is '../logs'.",
     )
+    parser.add_argument(
+        "--phase1_file",
+        type=str,
+        default=None,
+        help="optional phase 1 .pkl file to skip directly to phase 2",
+    )
 
     args = parser.parse_args()
     logdir = Path(args.logdir)
+    phase1_file = args.phase1_file
 
     # Create log directory if it doesn't exist
     logdir.mkdir(parents=True, exist_ok=True)
 
     # Setup logging
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if phase1_file:
+        timestamp = phase1_file.split("_")[-1]
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = logdir / f"tune_{timestamp}.log"
 
     # Configure logger with process ID in format
@@ -363,4 +423,4 @@ if __name__ == "__main__":
     logger.info(f"Parameters in tune.yaml are set as follows:")
     logger.info(open("../config/tune.yaml").read())
 
-    main()
+    main(timestamp, phase1_file)
