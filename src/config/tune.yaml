@@ -1,8 +1,8 @@
 # Subjects by phase
 subjects_phase1:
   - Epat38
-  - Spat48
   - Spat55
+  - Spat48
 subjects_phase2:
   - Epat38
   - Spat31
@@ -12,25 +12,23 @@ subjects_phase2:
   - Spat49
   - Spat53
   - Epat35
-  - Spat55
-  - Spat52
 
 # Fixed training settings for tuning
-batch_size: 4
+batch_size: 6
 n_epochs: 15
 patience: 3
-n_folds: 5
-val_ratio: 0.2
-n_trials: 150
+n_folds: 4
+val_ratio: 0.25
+n_trials: 125
 top_k: 5
-min_resource: 2
+min_resource: 1
 
 # Search spaces
 search:
   embed_dim:
     type: int
-    low: 64
-    high: 256
+    low: 128
+    high: 320
     step: 64
 
   num_layers:
@@ -49,12 +47,11 @@ search:
 
   base_lr:
     type: loguniform
-    low: 1.0e-6
+    low: 1.0e-7
     high: 3.0e-4
 
   max_lr:
     type: loguniform
-    low: 5.0e-5
     high: 5.0e-3
 
   pct_start:

@@ -77,7 +77,8 @@ def objective_for_subjects(
     # sample hyperparameters dynamically
     trial_params = {}
     for hp_name, hp_cfg in search.items():
-        trial_params[hp_name] = suggest_from_cfg(trial, hp_name, hp_cfg)
+        if hp_name != 'max_lr':
+            trial_params[hp_name] = suggest_from_cfg(trial, hp_name, hp_cfg)
     trial.set_user_attr("trial_params", trial_params)
 
     # extract hyperparameters
@@ -86,7 +87,12 @@ def objective_for_subjects(
     n_heads = trial_params["n_heads"]
     weight_decay = trial_params["weight_decay"]
     base_lr = trial_params["base_lr"]
-    max_lr = trial_params["max_lr"]
+    max_lr = trial.suggest_float(
+        "max_lr",
+        low=(base_lr + 1e-12),  # smallest possible margin above base_lr
+        high=tune_cfg["search"]["max_lr"]["high"],
+        log=tune_cfg["search"]["max_lr"]["type"] == "loguniform"
+    )
     pct_start = trial_params["pct_start"]
 
     # Load dataset once per trial (with requested embed_dim)
@@ -173,8 +179,6 @@ def objective_for_subjects(
 
                 loss.backward()
 
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
-
                 optimizer.step()
                 # step scheduler once per optimizer.step
                 try:
@@ -208,7 +212,7 @@ def objective_for_subjects(
                     val_count += n_samples
 
             epoch_val_loss = val_loss_total / val_count
-            logger.info(f"Epoch #{epoch} - Validation loss: {epoch_val_loss}")
+            logger.info(f'Report step {report_step + 1}: val loss - {epoch_val_loss}')
 
             # Report the epoch metric to Optuna with a monotonic step counter
             report_step += 1
