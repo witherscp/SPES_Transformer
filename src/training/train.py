@@ -18,12 +18,6 @@ from src.datasets.seeg_dataset import SEEGDataset
 from src.models.model import SEEGFusionModel, BaselineModel
 from src.training.evaluate import evaluate_model
 
-SEED = 42
-torch.manual_seed(SEED)
-random.seed(SEED)
-g = torch.Generator()
-g.manual_seed(SEED)
-
 
 def train_model(
     model,
@@ -35,7 +29,8 @@ def train_model(
     scheduler=None,
     n_epochs=50,
     n_steps_per_update=1,
-    patience=2,
+    patience=5,
+    min_epochs=5,
     use_val=True,
     **kwargs,
 ):
@@ -51,7 +46,8 @@ def train_model(
         scheduler: learning rate scheduler (optional)
         n_epochs: int, number of epochs (default: 50)
         n_steps_per_update: gradient accumulation steps (default: 1)
-        patience: early stopping patience (# consecutive epochs without improvement) (default: 2)
+        patience: early stopping patience (# consecutive epochs without improvement) (default: 5)
+        min_epochs: minimum number of epochs before patience starts aggregating (default: 5)
         use_val: whether to use validation set for early stopping (default: True)
 
     Returns:
@@ -113,7 +109,7 @@ def train_model(
             _, preds = torch.max(outputs, 1)
             train_correct += torch.sum(preds == labels.data)
 
-            log_param_stats(model, writer, step)
+            log_param_stats(model, writer, global_step)
 
             if (step + 1) % n_steps_per_update == 0:
                 if kwargs["Parameters"]["use_clipping"]:
@@ -198,20 +194,24 @@ def train_model(
 
         # Early stopping logic
         if use_val:
-            if epoch_val_loss < best_val_loss:
+            improved = epoch_val_loss < best_val_loss
+            if improved:
                 best_val_loss = epoch_val_loss
                 best_epoch = epoch
-                epochs_no_improve = 0
                 best_weights = model.state_dict()
                 torch.save(best_weights, save_dir / f"{save_prefix}_best_model.pt")
-            else:
-                epochs_no_improve += 1
-                if epochs_no_improve >= patience:
-                    logger.success(
-                        f"⏹ Early stopping at epoch {epoch} (no val loss improvement for {patience} epochs)"
-                    )
-                    model.load_state_dict(best_weights)
-                    break
+
+            if epoch > min_epochs:
+                if improved:
+                    epochs_no_improve = 0
+                else:
+                    epochs_no_improve += 1
+                    if epochs_no_improve >= patience:
+                        logger.success(
+                            f"⏹ Early stopping at epoch {epoch} (no val loss improvement for {patience} epochs)"
+                        )
+                        model.load_state_dict(best_weights)
+                        break
         else:
             # assume most recent epoch is best
             best_epoch = epoch
@@ -421,9 +421,10 @@ def main(model_type, **kwargs):
                 optimizer=optimizer,
                 scheduler=scheduler,
                 device=device,
-                save_prefix=f"{test_subj}_model_{model_type}_split_{k+1}",
+                save_prefix=f"{test_subj}_model_{model_type}_split_{k+1}_seed_{SEED}",
                 n_epochs=kwargs["Parameters"]["n_epochs"],
                 patience=kwargs["Parameters"]["patience"],
+                min_epochs=kwargs["Parameters"]["min_epochs"],
                 n_steps_per_update=kwargs["Parameters"]["n_steps_per_update"],
                 use_val=use_val,
                 **kwargs,
@@ -434,11 +435,20 @@ def main(model_type, **kwargs):
             )
 
             metrics = evaluate_model(model, dataloaders["test"], device)
+            metrics['best_epoch'] = best_epoch
             metric_dict[f"{test_subj}_split_{k+1}"] = metrics
+
+            del model, optimizer, scheduler, criterion, dataloaders
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     logger.success(f"\n=== Summary of metrics across all test subjects and splits ===")
     for key, value in metric_dict.items():
         logger.success(f"{key}: {value}")
+    
+    best_epochs = [v['best_epoch'] for v in metric_dict.values() if 'best_epoch' in v]
+    median_epoch = int(np.median(best_epochs))
+    logger.info(f"Median selected epoch across folds: {median_epoch}")
 
 
 if __name__ == "__main__":
@@ -481,5 +491,14 @@ if __name__ == "__main__":
     logger.info(open("../config/default.yaml").read())
 
     config = load_yaml()
+
+    SEED = config['Parameters']['random_seed']
+    torch.manual_seed(SEED)
+    random.seed(SEED)
+    np.random.seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
+    g = torch.Generator()
+    g.manual_seed(SEED)
 
     main(model_type, **config)
