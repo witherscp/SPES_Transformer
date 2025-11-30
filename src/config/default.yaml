@@ -34,13 +34,13 @@ Parameters:
 
   # Model
   embed_dim: 192
-  num_layers: 5
+  num_layers: 4
   n_heads: 4
 
   # Optimizer
-  weight_decay: 0.0002012915968425392
+  weight_decay: 3.9748579283027355e-05
 
   # Scheduler
-  base_lr: 1.9947771573336754e-05
-  max_lr: 8.774492933643487e-05
-  pct_start: 0.4314841606163928
+  base_lr: 2.1943146792224905e-06
+  max_lr: 7.247734928105904e-05
+  pct_start: 0.20921301057679687

@@ -19,9 +19,9 @@ n_epochs: 15
 patience: 3
 n_folds: 4
 val_ratio: 0.25
-n_trials: 125
+n_trials: 200
 top_k: 5
-min_resource: 1
+min_resource: 2
 
 # Search spaces
 search:
