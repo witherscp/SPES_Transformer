@@ -387,6 +387,19 @@ def main(model_type, **kwargs):
                     n_classes=2,
                     device=device,
                 )
+                optimizer = optim.AdamW(
+                    model.parameters(),
+                    lr=kwargs["Parameters"]["base_lr"],
+                    weight_decay=kwargs["Parameters"]["weight_decay"],
+                )
+                scheduler = optim.lr_scheduler.OneCycleLR(
+                    optimizer=optimizer,
+                    max_lr=kwargs["Parameters"]["max_lr"],
+                    epochs=kwargs["Parameters"]["n_epochs"],
+                    steps_per_epoch=len(dataloaders["train"]),
+                    pct_start=kwargs["Parameters"]["pct_start"],
+                    anneal_strategy="cos",
+                )
             elif model_type == "Baseline":
                 model = BaselineModel(
                     embed_dim=kwargs["Parameters"]["embed_dim"],
@@ -395,24 +408,19 @@ def main(model_type, **kwargs):
                     n_elecs=25,
                     generator=g,
                 )
+                optimizer = optim.AdamW(
+                    model.parameters(),
+                    lr=1e-4
+                )
+                scheduler=None
             model.to(device)
 
-            optimizer = optim.AdamW(
-                model.parameters(),
-                lr=kwargs["Parameters"]["base_lr"],
-                weight_decay=kwargs["Parameters"]["weight_decay"],
-            )
-
-            scheduler = optim.lr_scheduler.OneCycleLR(
-                optimizer=optimizer,
-                max_lr=kwargs["Parameters"]["max_lr"],
-                epochs=kwargs["Parameters"]["n_epochs"],
-                steps_per_epoch=len(dataloaders["train"]),
-                pct_start=kwargs["Parameters"]["pct_start"],
-                anneal_strategy="cos",
-            )
-
             criterion = nn.CrossEntropyLoss(weight=weights.to(device))
+
+            if use_val:
+                save_prefix = f"{test_subj}_model_{model_type}_seed_{SEED}_split_{k+1}"
+            else:
+                save_prefix = f"{test_subj}_model_{model_type}_seed_{SEED}_final"
 
             model, history, best_epoch = train_model(
                 model=model,
@@ -421,7 +429,7 @@ def main(model_type, **kwargs):
                 optimizer=optimizer,
                 scheduler=scheduler,
                 device=device,
-                save_prefix=f"{test_subj}_model_{model_type}_seed_{SEED}_split_{k+1}",
+                save_prefix=save_prefix,
                 n_epochs=kwargs["Parameters"]["n_epochs"],
                 patience=kwargs["Parameters"]["patience"],
                 min_epochs=kwargs["Parameters"]["min_epochs"],
