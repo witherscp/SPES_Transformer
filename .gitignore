@@ -5,3 +5,4 @@ experiments/
 *.egg-info/
 src/logs/
 src/tb_logs
+results/*

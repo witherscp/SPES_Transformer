@@ -7,6 +7,7 @@ from loguru import logger
 from argparse import ArgumentParser
 
 import numpy as np
+import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Subset
@@ -390,7 +391,6 @@ def main(model_type, **kwargs):
                 model = BaselineModel(
                     embed_dim=kwargs["Parameters"]["embed_dim"],
                     n_classes=2,
-                    device=device,
                     stim_model="convergent",
                     n_elecs=25,
                     generator=g,
@@ -414,7 +414,7 @@ def main(model_type, **kwargs):
 
             criterion = nn.CrossEntropyLoss(weight=weights.to(device))
 
-            model, _, best_epoch = train_model(
+            model, history, best_epoch = train_model(
                 model=model,
                 dataloaders=dataloaders,
                 criterion=criterion,
@@ -435,8 +435,22 @@ def main(model_type, **kwargs):
             )
 
             metrics = evaluate_model(model, dataloaders["test"], device)
-            metrics['best_epoch'] = best_epoch
-            metric_dict[f"{test_subj}_split_{k+1}"] = metrics
+            metrics["best_epoch"] = best_epoch
+            metrics["train_loss"] = history["train_loss"][best_epoch - 1]
+            if use_val:
+                metrics["val_loss"] = history["val_loss"][best_epoch - 1]
+                metric_dict[f"{test_subj}_split_{k+1}"] = metrics
+            else:
+                metric_dict[f"{test_subj}"] = metrics
+
+            df = pd.DataFrame.from_dict(metric_dict, orient="index")
+            results_path = Path("../../results")
+            results_path.mkdir(exist_ok=True, parents=True)
+            if use_val:
+                fname = f"{model_type}_results_validation_seed_{SEED}.csv"
+            else:
+                fname = f"{model_type}_results_final_seed_{SEED}.csv"
+            df.to_csv(results_path / fname)
 
             del model, optimizer, scheduler, criterion, dataloaders
             if torch.cuda.is_available():
@@ -445,10 +459,6 @@ def main(model_type, **kwargs):
     logger.success(f"\n=== Summary of metrics across all test subjects and splits ===")
     for key, value in metric_dict.items():
         logger.success(f"{key}: {value}")
-    
-    best_epochs = [v['best_epoch'] for v in metric_dict.values() if 'best_epoch' in v]
-    median_epoch = int(np.median(best_epochs))
-    logger.info(f"Median selected epoch across folds: {median_epoch}")
 
 
 if __name__ == "__main__":
@@ -492,7 +502,7 @@ if __name__ == "__main__":
 
     config = load_yaml()
 
-    SEED = config['Parameters']['random_seed']
+    SEED = config["Parameters"]["random_seed"]
     torch.manual_seed(SEED)
     random.seed(SEED)
     np.random.seed(SEED)
