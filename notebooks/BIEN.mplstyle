@@ -1,0 +1,27 @@
+pdf.fonttype : 42
+ps.fonttype : 42
+axes.titlesize :  large
+axes.titleweight : bold
+axes.labelweight: bold
+axes.labelsize: large
+axes.spines.top: False
+axes.spines.right : False
+# axes.spines.left : False - Disable left spine, not used often
+ytick.left : True
+figure.figsize : 10, 5
+xtick.bottom : True 
+xtick.major.size : 2
+xtick.major.width : 1
+xtick.minor.size : 2 
+xtick.minor.width : 1 
+xtick.labelsize : 10 
+axes.linewidth : 2 
+font.weight :  bold
+font.family : Arial
+boxplot.boxprops.linewidth : 2.5
+boxplot.whiskerprops.linewidth : 2.5
+boxplot.capprops.linewidth : 2.5
+boxplot.medianprops.linewidth : 2.5
+boxplot.flierprops.marker : o
+boxplot.flierprops.markersize : 4
+boxplot.flierprops.linewidth : 1
