@@ -64,6 +64,8 @@ def evaluate_model(model, dataloader, device):
         "specificity": specificity,
         "youden_index": youden_index,
         "optimal_threshold": best_threshold,
+        "fpr": fpr.tolist(),
+        "tpr": tpr.tolist(),
     }
 
     logger.success(metrics)
