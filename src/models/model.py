@@ -264,7 +264,9 @@ class BaselineModel(nn.Module):
         self.g = generator
         self.n_elecs = n_elecs
 
-        self.msresnet = MSResNet(input_channel=self.elecs, num_classes=embed_dim, dropout_rate=0.2)
+        self.msresnet = MSResNet(
+            input_channel=self.n_elecs, num_classes=embed_dim, dropout_rate=0.2
+        )
         self.classifier = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.ReLU(),
@@ -282,7 +284,7 @@ class BaselineModel(nn.Module):
         B, _, _, n_timepoints = x.shape
 
         # default array to fill
-        resnet_input = torch.zeros(B, self.n_elecs, n_timepoints)
+        resnet_input = torch.zeros(B, self.n_elecs, n_timepoints, device=x.device, dtype=x.dtype)
 
         # select random trials for each target (max 1 trial per 1 electrode)
         target_inds, elec_inds, trial_inds = torch.where(~padding_mask)
@@ -297,12 +299,18 @@ class BaselineModel(nn.Module):
                     break
 
                 # randomly select an electrode index
-                rand_ind = torch.randint(0, len(possible_elecs), (1,), generator=self.g)
+                if self.g is not None:
+                    rand_ind = torch.randint(0, len(possible_elecs), (1,), generator=self.g)
+                else:
+                    rand_ind = torch.randint(0, len(possible_elecs), (1,))
                 elec_ind = possible_elecs[rand_ind]
                 elec_mask = elec_inds[target_mask] == elec_ind
 
                 # randomly select a trial for that electrode
-                rand_ind = torch.randint(0, len(trial_inds[target_mask][elec_mask]), (1,))
+                if self.g is not None:
+                    rand_ind = torch.randint(0, elec_mask.sum(), (1,), generator=self.g)
+                else:
+                    rand_ind = torch.randint(0, elec_mask.sum(), (1,))
                 trial_ind = trial_inds[target_mask][elec_mask][rand_ind]
                 resnet_input[target_ind, i] = x[target_ind, elec_ind, trial_ind, :]
 
