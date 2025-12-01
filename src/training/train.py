@@ -206,7 +206,7 @@ def train_model(
                     epochs_no_improve = 0
                 else:
                     epochs_no_improve += 1
-                    if epochs_no_improve >= patience:
+                    if epochs_no_improve > patience:
                         logger.success(
                             f"⏹ Early stopping at epoch {epoch} (no val loss improvement for {patience} epochs)"
                         )
@@ -421,7 +421,7 @@ def main(model_type, **kwargs):
                 optimizer=optimizer,
                 scheduler=scheduler,
                 device=device,
-                save_prefix=f"{test_subj}_model_{model_type}_split_{k+1}_seed_{SEED}",
+                save_prefix=f"{test_subj}_model_{model_type}_seed_{SEED}_split_{k+1}",
                 n_epochs=kwargs["Parameters"]["n_epochs"],
                 patience=kwargs["Parameters"]["patience"],
                 min_epochs=kwargs["Parameters"]["min_epochs"],
