@@ -812,7 +812,11 @@ def _remove_inner_space(bip_label):
     """Splits a bipolar long label into its two constituent contacts.
     Use in a pandas .apply() to create two new columns."""
 
-    parts = bip_label.split(" - ")
+    if " - " in bip_label:
+        parts = bip_label.split(" - ")
+    else:
+        parts = bip_label.split("-")
+
     if len(parts) == 2:
         return "-".join(parts)
     elif len(parts) > 2 & len(parts) % 2 == 0:
