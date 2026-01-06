@@ -50,13 +50,27 @@ def build_subject_pt(subj, **kwargs):
     if len(spes_data_dict) == 0:
         return False
 
+    # check that labels are consistent with soz_label_dict
+    not_present = []
+    for label in soz_label_dict.keys():
+        if label in spes_data_dict["labels"]:
+            continue
+        else:
+            not_present.append(label)
+    if not_present:
+        logger.error(
+            f"There are {len(not_present)} channels present in SOZ label dict that "
+            f"are not present in spes_data_dict['labels']. These include: {sorted(not_present)}."
+            " This should not happen, so something must have gone wrong."
+        )
+        return False
+
     # Load convergent and divergent datasets
     data_dict = combine_pulses(
         spes_data_dict=spes_data_dict, mni_coords_dict=mni_coords_dict, **kwargs
     )
 
     ## ------ Save processed data as .pt file ------
-
     # get target_labels
     target_labels = [
         1 if soz_label_dict.get(target, "NIZ") == "SOZ" else 0 for target in data_dict["targets"]
