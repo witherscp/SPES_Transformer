@@ -147,7 +147,7 @@ def get_subj_path(subj, path="subj_seeg_path"):
 
     config = load_yaml()
 
-    subj_dir = Path(config["Paths"][path].replace("$SUBJ", subj))
+    subj_dir = Path(config["paths"][path].replace("$SUBJ", subj))
 
     if subj_dir.is_dir() == False:
         possible_dirs = list(subj_dir.parent.glob(f"{subj}*"))
@@ -168,29 +168,31 @@ def load_roi_assignments(subj, subj_seeg_dir):
 
     Args:
         subj (str): The name of the patient.
-        subj_seeg_dir (Path): The subject's SEEG directory from get_subj_path(subj, path='subj_seeg_path').
+        subj_seeg_dir (Path): The subject's SEEG directory from get_subj_path(subj).
 
     Returns:
         pd.DataFrame: A DataFrame containing the ROI assignments, or an empty DataFrame if not found.
     """
 
     config = load_yaml()
-    roi_df_path = subj_seeg_dir / config["Paths"]["roi_assignments_file"]
-
+    roi_df_path1 = subj_seeg_dir / config["paths"]["roi_assignments_file"]
     try:
-        roi_df = pd.read_csv(roi_df_path)
+        roi_df = pd.read_csv(roi_df_path1)
     except FileNotFoundError:
-        roi_df_path = roi_df_path.parent / ("SEEG_BipMontage_ROI_Assignments.csv")
+        roi_df_path2 = roi_df_path1.parent / ("SEEG_BipMontage_ROI_Assignments_EditedWithEEG.csv")
         try:
-            roi_df = pd.read_csv(roi_df_path)
+            roi_df = pd.read_csv(roi_df_path2)
         except FileNotFoundError:
-            logger.error(
-                f"Could not find ROI assignments file for {subj} at {roi_df_path} or {config['paths']['roi_assignments_file']}"
-            )
-            return pd.DataFrame()
+            roi_df_path3 = roi_df_path2.parent / ("SEEG_BipMontage_ROI_Assignments.csv")
+            try:
+                roi_df = pd.read_csv(roi_df_path3)
+            except FileNotFoundError:
+                logger.error(
+                    f"Could not find ROI assignments file for {subj} at {roi_df_path1}, {roi_df_path2}, or {roi_df_path3}."
+                )
+                return pd.DataFrame()
 
     roi_df["DKS Region Name"] = roi_df["DKS Region Name"].fillna("Unknown")
-    roi_df["Bip Label"] = roi_df["Bip Label"].str.replace(" ", "")
 
     return roi_df
 
@@ -360,11 +362,11 @@ def get_soz_label_dict(subj, IZ_as_NIZ=True):
     config = load_yaml()
 
     soz_labels_df = pd.read_csv(
-        config["Paths"]["soz_labels_fpath"], names=["Patient", "Bipole", "Label"]
+        config["paths"]["soz_labels_fpath"], names=["Patient", "Bipole", "Label"]
     )
     pat_labels = soz_labels_df[soz_labels_df.Patient == subj].copy()
     if pat_labels.empty:
-        logger.error(f"{subj} not found in SOZ labels file: {config['Paths']['soz_labels_fpath']}")
+        logger.error(f"{subj} not found in SOZ labels file: {config['paths']['soz_labels_fpath']}")
         return {}
 
     pat_labels["Bipole"] = pat_labels["Bipole"].str.replace(" ", "")
@@ -431,6 +433,13 @@ def get_mni_coords_dict(subj):
     contacts = coords_df["Contact"].to_numpy()
     mni_coords_dict = {c: coords_mni[i] for i, c in enumerate(contacts)}
 
+    for coords in mni_coords_dict.values():
+        if np.any(np.isnan(coords)):
+            logger.error(
+                "NaN coordinates are present. Problem with get_mni_coords_dict() is present."
+            )
+            return {}
+
     logger.success(
         f"Built MNI coords dict for {subj} with {len(mni_coords_dict)} channels (cached)"
     )
@@ -470,15 +479,21 @@ def _load_bip_lut(subj, subj_seeg_dir):
 
     Args:
         subj (str): The name of the patient.
-        subj_seeg_dir (Path): The subject's SEEG directory from get_subj_path(subj, path='subj_seeg_path').
-
+        subj_seeg_dir (Path): The subject's SEEG directory from get_subj_path(subj).
     Returns:
         pd.DataFrame: A DataFrame containing the bipolar lookup table with columns ['Long', 'Short'].
     """
     config = load_yaml()
 
-    bip_lut_path = subj_seeg_dir / config["Paths"]["subj_bip_lut_file"].replace("$SUBJ", subj)
-    bip_lut = pd.read_csv(bip_lut_path, names=["Long", "Short"])
+    bip_lut_path_cleaned = subj_seeg_dir / config["paths"]["subj_bip_lut_file"].replace(
+        "$SUBJ", subj
+    )
+    bip_lut_path = subj_seeg_dir / bip_lut_path_cleaned.name.replace("_cleaned.csv", ".csv")
+
+    try:
+        bip_lut = pd.read_csv(bip_lut_path_cleaned, names=["Long", "Short"])
+    except FileNotFoundError:
+        bip_lut = pd.read_csv(bip_lut_path, names=["Long", "Short"])
     return bip_lut
 
 
@@ -493,26 +508,55 @@ def _add_short_label_to_roi_df(roi_df, bip_lut):
         pd.DataFrame: Updated ROI DataFrame with an added 'Short Bip Label' column.
     """
 
-    bip_lut.Short = bip_lut.Short.str.replace(" ", "")
-    bip_lut.Long = bip_lut.Long.str.replace(" ", "")
-    long_to_short = dict(zip(bip_lut.Long, bip_lut.Short))
+    bip_lut = bip_lut.copy()
 
-    # Split long bipoles (e.g., "R hippo 1 - R hippo 2") into individual contacts
-    bip_splits = roi_df["Bip Label"].apply(_split_contacts_safe)
-    bip_splits.columns = ["contact1", "contact2"]
+    bip_lut["Long_norm"] = (
+        bip_lut["Long"].str.lower().str.replace(r"[\s\-]+", " ", regex=True).str.strip()
+    )
 
-    # Extract prefix and numeric parts
-    for c in ["contact1", "contact2"]:
-        roi_df[f"{c}_prefix"] = bip_splits[c].str.extract(r"(.+?)(\d+)$")[0]
-        roi_df[f"{c}_num"] = bip_splits[c].str.extract(r"(.+?)(\d+)$")[1]
+    long_to_short = dict(zip(bip_lut["Long_norm"], bip_lut["Short"]))
 
-        # Map long → short electrode name
-        roi_df[f"{c}_short_prefix"] = roi_df[f"{c}_prefix"].map(long_to_short)
-        roi_df[f"{c}_short_prefix"] = roi_df[f"{c}_short_prefix"].fillna(roi_df[f"{c}_prefix"])
-        roi_df[f"{c}_short"] = roi_df[f"{c}_short_prefix"] + roi_df[f"{c}_num"]
+    def shorten_electrode(label, long_to_short):
+        """
+        'ant cingulate 1'     -> 'AC1'
+        'mid front gyrus 2 1' -> 'MFG2 1'
+        """
 
-    # Combine into final short-form bipole
-    roi_df["Short Bip Label"] = roi_df["contact1_short"] + "-" + roi_df["contact2_short"]
+        label_norm = re.sub(r"[\s\-]+", " ", label.lower()).strip()
+
+        # extract trailing number
+        m = re.search(r"(\d+)$", label_norm)
+        if not m:
+            raise ValueError(f"No contact number in '{label}'")
+
+        contact = m.group(1)
+        roi_text = label_norm[: m.start()].strip()
+
+        for long_name, short in long_to_short.items():
+            if roi_text == long_name:
+                return f"{short}{contact}"
+
+        raise ValueError(f"No ROI match for '{label}'")
+
+    def shorten_bipole_with_contacts(bip_label, long_to_short):
+        """
+        Returns:
+            anode, cathode, bip_short
+        """
+
+        if " - " not in bip_label:
+            raise ValueError(f"Invalid bipole format: {bip_label}")
+
+        left_raw, right_raw = bip_label.split(" - ", 1)
+
+        anode = shorten_electrode(left_raw, long_to_short)
+        cathode = shorten_electrode(right_raw, long_to_short)
+
+        return anode, cathode, f"{anode}-{cathode}"
+
+    roi_df[["Anode", "Cathode", "Short Bip Label"]] = roi_df["Bip Label"].apply(
+        lambda x: pd.Series(shorten_bipole_with_contacts(x, long_to_short))
+    )
 
     return roi_df
 
@@ -546,12 +590,201 @@ def _load_mni_affine(subj):
     """
     config_analysis = load_yaml()
     subj_seeg_dir = get_subj_path(subj, path="subj_seeg_path")
-    mni_file = subj_seeg_dir / config_analysis["Paths"]["mni_file"]
+    mni_file = subj_seeg_dir / config_analysis["paths"]["mni_file"]
 
     mni_img = nib.load(mni_file)
     mni_affine = mni_img.affine
 
     return mni_affine
+
+
+def matstruct_to_dict(obj):
+    """
+    Recursively convert scipy.io.matlab.mat_struct objects to dicts.
+    """
+    if hasattr(obj, "_fieldnames"):
+        return {field: matstruct_to_dict(getattr(obj, field)) for field in obj._fieldnames}
+    elif isinstance(obj, dict):
+        return {k: matstruct_to_dict(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [matstruct_to_dict(v) for v in obj]
+    else:
+        return obj
+
+
+def loadmat_spes(file_path, data=["all"], verbose=False):
+    """Load a .mat file, handling both v7.3 and earlier versions.
+
+    Args:
+        file_path (str or Path): Path to the .mat file.
+        data (list): List of data names to load. Default is ['all'].
+            ['all'] loads all available data.
+            ['labels', 'fs', 'pulse'] for example will load only those variables.
+        verbose (bool): If True, print information about loaded data. Default is False.
+
+    Returns:
+        dict: A dictionary containing the contents of the .mat file.
+    """
+
+    outputs = {}
+
+    # load .mat file
+    mat = lm(file_path, squeeze_me=True, struct_as_record=False)
+    mat = matstruct_to_dict(mat)
+
+    if data == ["all"]:
+        data = [key for key in mat.keys() if not key.startswith("__")]
+
+    for d in data:
+        match d:
+            case v if v in [
+                "fs",
+                "stim_sequence",
+                "stim_channel",
+                "subj",
+                "config_params",
+                "blocks",
+                "labels",
+            ]:
+                outputs[v] = mat[v]
+
+            case _:
+                if verbose:
+                    logger.warning(f"Data '{d}' has no matching case and was not loaded.")
+                continue
+
+    return outputs
+
+
+def load_spes_data(subj):
+    """Load SPES data for a given subject.
+    Args:
+        subj (str): Subject identifier.
+    Returns:
+        dict: A dictionary containing SPES data for the subject.
+            keys = stim channels
+            values = dicts with keys = (trains, pulse times, data, labels, fs, current)
+    """
+
+    config = load_yaml()
+    data_dir = get_subj_path(subj, path="subj_preproc_path")
+    preproc_dir = data_dir / config["paths"]["subj_train_dir"].replace("$SUBJ", subj)
+
+    master_dict = {}
+
+    ## check for existence of folder and presence of files
+    if not preproc_dir.is_dir():
+        logger.error(f"{preproc_dir} does not exist. Cannot proceed...")
+        return {}
+
+    if len(list(preproc_dir.glob(f"{subj}_*.mat"))) == 0:
+        logger.error("No .mat files are present in preproc_dir. Cannot proceed...")
+        return {}
+
+    # First, retrieve stim sequence from any file
+    mat_dict = loadmat_spes(
+        list(preproc_dir.glob(f"{subj}_*.mat"))[0],
+        data=["stim_sequence", "labels", "fs", "config_params"],
+    )
+    stim_sequence = mat_dict["stim_sequence"]
+    labels = mat_dict["labels"]
+    fs = mat_dict["fs"]
+    config_params = mat_dict["config_params"]
+
+    master_dict["stim_sequence"] = stim_sequence
+    master_dict["labels"] = labels
+    master_dict["fs"] = fs
+    master_dict["config_params"] = config_params
+
+    tol_ms = config["parameters"]["tol_ms"]
+    tol_length = int((tol_ms / 1000) * fs)
+
+    # Iterate through all stim blocks
+    stim_dict = {}
+    stim_trains = {}
+    for stim_block in stim_sequence:
+        stim_chan = stim_block.split("_")[0]
+        block = stim_block.split("_")[1]
+
+        stim_fpath = list(
+            preproc_dir.glob(f"{subj}_{stim_chan.replace(' ', '')}_padded_trains.mat")
+        )[0]
+
+        mat_dict = loadmat_spes(stim_fpath, ["blocks"])
+        trains = mat_dict["blocks"][block]["train"]
+
+        if isinstance(trains, int):
+            bad_pulses = mat_dict["blocks"][block]["bad_pulses"].get(f"train{trains}", 0)
+            bad_train = bad_pulses == -1
+
+            if not bad_train:
+
+                train_data = mat_dict["blocks"][block]["filt_data"]
+                pulse_times = mat_dict["blocks"][block]["local_pulse_times_s"]
+                first_pulse, last_pulse = pulse_times[0], pulse_times[-1]
+                expected_length = fs * (
+                    (last_pulse + 1 - first_pulse) + config_params["full_train_pad_s"] * 2
+                )
+
+                if (
+                    expected_length - tol_length
+                    < train_data.shape[1]
+                    < expected_length + tol_length
+                ):
+                    stim_dict[f"{stim_block}_train{trains}"] = {
+                        "data": train_data,
+                        "pulse_times": pulse_times,
+                        "current": mat_dict["blocks"][block]["current"],
+                        "global_train_start_s": mat_dict["blocks"][block]["global_train_start_s"],
+                    }
+                    stim_trains.setdefault(stim_block, []).append(trains)
+                else:
+                    logger.warning(
+                        f"Train {trains} in block {block} for subject {subj} and stim channel {stim_chan} has unexpected length "
+                        f"{train_data.shape[1]} samples, expected ~{expected_length} samples +/- {tol_length} samples. Skipping."
+                    )
+        else:
+            for i, train in enumerate(trains):
+
+                bad_pulses = mat_dict["blocks"][block]["bad_pulses"].get(f"train{train}", 0)
+
+                bad_train = False
+                if isinstance(bad_pulses, int):
+                    bad_train = bad_pulses == -1
+
+                if not bad_train:
+
+                    train_data = mat_dict["blocks"][block]["filt_data"][i]
+                    pulse_times = mat_dict["blocks"][block]["local_pulse_times_s"][i]
+                    first_pulse, last_pulse = pulse_times[0], pulse_times[-1]
+                    expected_length = fs * (
+                        (last_pulse + 1 - first_pulse) + config_params["full_train_pad_s"] * 2
+                    )
+
+                    if (
+                        expected_length - tol_length
+                        < train_data.shape[1]
+                        < expected_length + tol_length
+                    ):
+                        stim_dict[f"{stim_block}_train{train}"] = {
+                            "data": train_data,
+                            "pulse_times": pulse_times,
+                            "current": mat_dict["blocks"][block]["current"][i],
+                            "global_train_start_s": mat_dict["blocks"][block][
+                                "global_train_start_s"
+                            ][i],
+                        }
+                        stim_trains.setdefault(stim_block, []).append(train)
+                    else:
+                        logger.warning(
+                            f"Train {train} in block {block} for subject {subj} and stim channel {stim_chan} has unexpected length "
+                            f"{train_data.shape[1]} samples, expected ~{expected_length} samples +/- {tol_length} samples. Skipping."
+                        )
+
+    master_dict["stim_data"] = stim_dict
+    master_dict["stim_trains"] = stim_trains
+
+    return master_dict
 
 
 def _transform_to_mni(coords_pat, mni_affine):
@@ -634,10 +867,10 @@ def _compute_bipole_coords(coords_df, roi_df):
 
     # Step 1: Merge coords for contact1 and contact2
     merged = (
-        roi_df.merge(coords_df, left_on="contact1_short", right_on="Contact")
+        roi_df.merge(coords_df, left_on="Anode", right_on="Contact")
         .rename(columns={"X": "X1", "Y": "Y1", "Z": "Z1"})
         .drop(columns="Contact")
-        .merge(coords_df, left_on="contact2_short", right_on="Contact")
+        .merge(coords_df, left_on="Cathode", right_on="Contact")
         .rename(columns={"X": "X2", "Y": "Y2", "Z": "Z2"})
         .drop(columns="Contact")
     )
@@ -673,7 +906,7 @@ def _load_pat_coords(subj, subj_seeg_dir, bip_lut):
 
     config = load_yaml()
 
-    coords_file = subj_seeg_dir / config["Paths"]["subj_coords_file"].replace("$SUBJ", subj)
+    coords_file = subj_seeg_dir / config["paths"]["subj_coords_file"].replace("$SUBJ", subj)
     if coords_file.is_file():
         coords = np.loadtxt(coords_file, skiprows=1)
     else:
@@ -687,7 +920,6 @@ def _load_pat_coords(subj, subj_seeg_dir, bip_lut):
 
     contact_file = Path(str(coords_file).replace("coords_registered", "raw_contact_names"))
     contacts = pd.read_csv(contact_file, header=None, names=["Long", "Num"])
-    contacts["Long"] = contacts["Long"].str.replace(" ", "")
     contacts["Short"] = contacts["Long"].map(dict(zip(bip_lut.Long, bip_lut.Short)))
     contacts["Contact"] = contacts["Short"] + contacts["Num"].astype(str)
 

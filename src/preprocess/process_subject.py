@@ -11,7 +11,7 @@ def main():
 
     parser = ArgumentParser(
         description="Prepare .pt file for a given subject from their .mat files present in "
-        "subj_pulse_dir as specified in default.yaml."
+        "subj_train_dir as specified in default.yaml."
     )
     parser.add_argument(
         "-s",
