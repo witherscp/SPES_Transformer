@@ -17,6 +17,20 @@ from src.utils import (
 )
 
 
+def get_missing_labels(soz_label_dict, all_labels):
+
+    # shorten based on .edf maximum character limit
+    shortened_labels = [c[:14] for c in all_labels]
+    not_present = []
+    for label in soz_label_dict.keys():
+        if label in shortened_labels:
+            continue
+        else:
+            not_present.append(label)
+
+    return not_present
+
+
 @logger.catch
 def build_subject_pt(subj, **kwargs):
     """Build .pt file for a given subject from their .mat train files.
@@ -51,16 +65,11 @@ def build_subject_pt(subj, **kwargs):
         return False
 
     # check that labels are consistent with soz_label_dict
-    not_present = []
-    for label in soz_label_dict.keys():
-        if label in spes_data_dict["labels"]:
-            continue
-        else:
-            not_present.append(label)
-    if not_present:
+    missing = get_missing_labels(soz_label_dict, all_labels=spes_data_dict["labels"])
+    if missing:
         logger.error(
-            f"There are {len(not_present)} channels present in SOZ label dict that "
-            f"are not present in spes_data_dict['labels']. These include: {sorted(not_present)}."
+            f"There are {len(missing)} channels present in SOZ label dict that "
+            f"are not present in spes_data_dict['labels']. These include: {sorted(missing)}."
             " This should not happen, so something must have gone wrong."
         )
         return False
@@ -72,8 +81,10 @@ def build_subject_pt(subj, **kwargs):
 
     ## ------ Save processed data as .pt file ------
     # get target_labels
+    # fix character limit based on .edf convention
     target_labels = [
-        1 if soz_label_dict.get(target, "NIZ") == "SOZ" else 0 for target in data_dict["targets"]
+        1 if soz_label_dict.get(target[:14], "NIZ") == "SOZ" else 0
+        for target in data_dict["targets"]
     ]
 
     # Simulate data processing and saving

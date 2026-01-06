@@ -369,7 +369,7 @@ def get_soz_label_dict(subj, IZ_as_NIZ=True):
         logger.error(f"{subj} not found in SOZ labels file: {config['paths']['soz_labels_fpath']}")
         return {}
 
-    pat_labels["Bipole"] = pat_labels["Bipole"].str.replace(" ", "")
+    pat_labels["Bipole"] = pat_labels["Bipole"].apply(_remove_inner_space)
 
     # Map numeric labels to string labels
     pat_labels["Label"] = pat_labels["Label"].apply(map_label)
@@ -808,22 +808,22 @@ def _transform_to_mni(coords_pat, mni_affine):
     return coords_mni
 
 
-def _split_contacts_safe(bip_label):
+def _remove_inner_space(bip_label):
     """Splits a bipolar long label into its two constituent contacts.
     Use in a pandas .apply() to create two new columns."""
 
-    parts = bip_label.split("-")
+    parts = bip_label.split(" - ")
     if len(parts) == 2:
-        return pd.Series(parts)
+        return "-".join(parts)
     elif len(parts) > 2 & len(parts) % 2 == 0:
         # Assume hyphens are in electrode names, e.g. "R-hippo1-R-hippo2"
         mid = len(parts) // 2
         contact1 = "-".join(parts[:mid])
         contact2 = "-".join(parts[mid:])
-        return pd.Series([contact1, contact2])
+        return "-".join([contact1, contact2])
     else:
         logger.warning(f"Could not split bipole label {bip_label}. Returning NaN.")
-        return pd.Series([np.nan, np.nan])
+        return np.NaN
 
 
 def _get_patient_coords(subj):
