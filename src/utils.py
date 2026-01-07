@@ -925,6 +925,11 @@ def _load_pat_coords(subj, subj_seeg_dir, bip_lut):
     contact_file = Path(str(coords_file).replace("coords_registered", "raw_contact_names"))
     contacts = pd.read_csv(contact_file, header=None, names=["Long", "Num"])
     contacts["Short"] = contacts["Long"].map(dict(zip(bip_lut.Long, bip_lut.Short)))
+    if contacts["Short"].isnull().any():
+        missing = contacts[contacts["Short"].isnull()]["Long"].tolist()
+        logger.error(f"Missing short labels for contacts: {missing}")
+        return pd.DataFrame()
+
     contacts["Contact"] = contacts["Short"] + contacts["Num"].astype(str)
 
     coords_df = pd.DataFrame(coords, columns=["X", "Y", "Z"])
