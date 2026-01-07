@@ -743,7 +743,7 @@ def load_spes_data(subj):
                     stim_trains.setdefault(stim_block, []).append(trains)
                 else:
                     logger.warning(
-                        f"Train {trains} in block {block} for subject {subj} and stim channel {stim_chan} has unexpected length "
+                        f"Train {trains} in {block} for subject {subj} and stim channel {stim_chan} has unexpected length "
                         f"{train_data.shape[1]} samples, expected ~{expected_length} samples +/- {tol_length} samples. Skipping."
                     )
         else:
