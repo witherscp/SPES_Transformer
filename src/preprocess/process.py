@@ -52,12 +52,16 @@ def build_subject_pt(subj, **kwargs):
     # get soz label dict
     soz_label_dict = get_soz_label_dict(subj)
 
+    if not soz_label_dict:
+        logger.error("Patient missing SOZ labels. Cannot proceed.")
+        return False
+
     # get mni coords dict
     mni_coords_dict = get_mni_coords_dict(subj)
 
     # check existence of both dictionaries
-    if (not soz_label_dict) or (not mni_coords_dict):
-        logger.error("Patient missing SOZ labels or MNI coords. Cannot proceed.")
+    if not mni_coords_dict:
+        logger.error("Patient missing MNI coords. Cannot proceed.")
         return False
 
     ## ------ Load and format pulse data ------
