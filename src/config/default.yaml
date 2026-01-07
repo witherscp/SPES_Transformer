@@ -11,9 +11,9 @@ paths:
   subj_train_dir: "$SUBJ_CCEP_new_padded_full_trains"
   
   # File names
-  subj_bip_lut_file: '$SUBJ_crave_edf_LUT.csv'
   subj_coords_file: '$SUBJ_coords_registered.csv'
-  roi_assignments_file: 'SEEG_BipMontage_ROI_Assignments_EditedWithEEG.csv'
+  subj_bip_lut_file: '$SUBJ_crave_edf_LUT_cleaned.csv'
+  roi_assignments_file: 'SEEG_BipMontage_ROI_Assignments_EditedWithEEG_cleaned.csv'
   mni_file: 'mni.nii'
 
 parameters:
