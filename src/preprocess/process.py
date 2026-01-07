@@ -19,16 +19,27 @@ from src.utils import (
 
 def get_missing_labels(soz_label_dict, all_labels):
 
-    # shorten based on .edf maximum character limit
-    shortened_labels = [c[:14] for c in all_labels]
-    not_present = []
-    for label in soz_label_dict.keys():
-        if label in shortened_labels:
-            continue
-        else:
-            not_present.append(label)
+    shorten_labels = False
+    if max(len(c) for c in soz_label_dict.keys()) <= 14:
+        shorten_labels = True
 
-    return not_present
+    missing = []
+    if shorten_labels:
+        # shorten based on .edf maximum character limit
+        shortened_labels = [c[:14] for c in all_labels]
+        for label in soz_label_dict.keys():
+            if label in shortened_labels:
+                continue
+            else:
+                missing.append(label)
+    else:
+        for label in soz_label_dict.keys():
+            if label in all_labels:
+                continue
+            else:
+                missing.append(label)
+
+    return missing, shorten_labels
 
 
 @logger.catch
@@ -65,7 +76,9 @@ def build_subject_pt(subj, **kwargs):
         return False
 
     # check that labels are consistent with soz_label_dict
-    missing = get_missing_labels(soz_label_dict, all_labels=spes_data_dict["labels"])
+    missing, shorten_labels = get_missing_labels(
+        soz_label_dict, all_labels=spes_data_dict["labels"]
+    )
     if missing:
         logger.error(
             f"There are {len(missing)} channels present in SOZ label dict that "
@@ -81,11 +94,17 @@ def build_subject_pt(subj, **kwargs):
 
     ## ------ Save processed data as .pt file ------
     # get target_labels
-    # fix character limit based on .edf convention
-    target_labels = [
-        1 if soz_label_dict.get(target[:14], "NIZ") == "SOZ" else 0
-        for target in data_dict["targets"]
-    ]
+    # if shorten_labels, fix character limit based on .edf convention
+    if shorten_labels:
+        target_labels = [
+            1 if soz_label_dict.get(target[:14], "NIZ") == "SOZ" else 0
+            for target in data_dict["targets"]
+        ]
+    else:
+        target_labels = [
+            1 if soz_label_dict.get(target, "NIZ") == "SOZ" else 0
+            for target in data_dict["targets"]
+        ]
 
     # Simulate data processing and saving
     data = {
