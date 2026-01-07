@@ -17,27 +17,21 @@ from src.utils import (
 )
 
 
-def get_missing_labels(soz_label_dict, all_labels):
+def check_labels(soz_label_dict, all_labels):
 
     shorten_labels = False
     if max(len(c) for c in soz_label_dict.keys()) <= 14:
+        new_labels = [c[:14] for c in all_labels]
         shorten_labels = True
+    else:
+        new_labels = all_labels
 
     missing = []
-    if shorten_labels:
-        # shorten based on .edf maximum character limit
-        shortened_labels = [c[:14] for c in all_labels]
-        for label in soz_label_dict.keys():
-            if label in shortened_labels:
-                continue
-            else:
-                missing.append(label)
-    else:
-        for label in soz_label_dict.keys():
-            if label in all_labels:
-                continue
-            else:
-                missing.append(label)
+    for label in soz_label_dict.keys():
+        if label in new_labels:
+            continue
+        else:
+            missing.append(label)
 
     return missing, shorten_labels
 
@@ -76,9 +70,7 @@ def build_subject_pt(subj, **kwargs):
         return False
 
     # check that labels are consistent with soz_label_dict
-    missing, shorten_labels = get_missing_labels(
-        soz_label_dict, all_labels=spes_data_dict["labels"]
-    )
+    missing, shorten_labels = check_labels(soz_label_dict, all_labels=spes_data_dict["labels"])
     if missing:
         logger.error(
             f"There are {len(missing)} channels present in SOZ label dict that "
