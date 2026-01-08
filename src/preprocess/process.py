@@ -19,21 +19,19 @@ from src.utils import (
 
 def check_labels(soz_label_dict, all_labels):
 
-    shorten_labels = False
-    if max(len(c) for c in soz_label_dict.keys()) <= 14:
-        new_labels = [c[:14] for c in all_labels]
-        shorten_labels = True
-    else:
-        new_labels = all_labels
+    old_to_new_dict = {}
 
     missing = []
     for label in soz_label_dict.keys():
-        if label in new_labels:
-            continue
+        label_chars = len(label)
+        trimmed_labels = [c[:label_chars] for c in all_labels]
+        if label in trimmed_labels:
+            label_idx = trimmed_labels.index(label)
+            old_to_new_dict[all_labels[label_idx]] = label
         else:
             missing.append(label)
 
-    return missing, shorten_labels
+    return missing, old_to_new_dict
 
 
 @logger.catch
@@ -74,7 +72,7 @@ def build_subject_pt(subj, **kwargs):
         return False
 
     # check that labels are consistent with soz_label_dict
-    missing, shorten_labels = check_labels(soz_label_dict, all_labels=spes_data_dict["labels"])
+    missing, old_to_new_dict = check_labels(soz_label_dict, all_labels=spes_data_dict["labels"])
     if missing:
         logger.error(
             f"There are {len(missing)} channels present in SOZ label dict that "
@@ -90,17 +88,10 @@ def build_subject_pt(subj, **kwargs):
 
     ## ------ Save processed data as .pt file ------
     # get target_labels
-    # if shorten_labels, fix character limit based on .edf convention
-    if shorten_labels:
-        target_labels = [
-            1 if soz_label_dict.get(target[:14], "NIZ") == "SOZ" else 0
-            for target in data_dict["targets"]
-        ]
-    else:
-        target_labels = [
-            1 if soz_label_dict.get(target, "NIZ") == "SOZ" else 0
-            for target in data_dict["targets"]
-        ]
+    target_labels = [
+        1 if soz_label_dict.get(old_to_new_dict.get(target, target), "NIZ") == "SOZ" else 0
+        for target in data_dict["targets"]
+    ]
 
     # Simulate data processing and saving
     data = {
