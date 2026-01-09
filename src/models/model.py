@@ -1,8 +1,6 @@
 from loguru import logger
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torcheeg.transforms import RandomNoise
 
 from src.models.multi_scale_ori import MSResNet
@@ -68,9 +66,6 @@ class TransformerBlock(nn.Module):
 class SEEGTransformer(nn.Module):
     def __init__(self, embed_dim=128, n_heads=4, dropout=0.1, num_layers=2, device="cuda"):
         super().__init__()
-
-        # self.cross_trial = TransformerBlock(embed_dim, n_heads=n_heads)
-        # self.cross_channel = TransformerBlock(embed_dim, n_heads=n_heads)
 
         # Cross-trial self-attention
         trial_encoder_layer = nn.TransformerEncoderLayer(
@@ -146,8 +141,6 @@ class SEEGTransformer(nn.Module):
 
         cls_token2 = self.cls_token2.expand(B, -1, -1)
         channel_seq = torch.cat([cls_token2, electrode_emb], dim=1)
-
-        # channel_seq = channel_seq + self.pos_embed_channels[:, : channel_seq.size(1)]
 
         if key_padding_mask is not None:
             key_padding_mask = key_padding_mask[:, 0].view(B, n_electrodes)
