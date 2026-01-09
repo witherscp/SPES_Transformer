@@ -38,12 +38,23 @@ def evaluate_model(model, dataloader, device):
     all_probs = np.concatenate(all_probs)
 
     # AUROC
-    try:
-        auroc = roc_auc_score(all_labels, all_probs)
-    except ValueError:
-        auroc = np.nan  # e.g., if only one class present in labels
+    auroc = roc_auc_score(all_labels, all_probs)
 
     # Compute ROC curve and find best threshold
+    if np.isnan(auroc):
+        logger.warning("AUROC is NaN  due to lack of SOZ samples in labels.")
+        return {
+            "accuracy": float("nan"),
+            "auroc": float("nan"),
+            "f1": float("nan"),
+            "sensitivity": float("nan"),
+            "specificity": float("nan"),
+            "youden_index": float("nan"),
+            "optimal_threshold": float("nan"),
+            "fpr": [],
+            "tpr": [],
+        }
+    
     fpr, tpr, thresholds = roc_curve(all_labels, all_probs)
     youden_values = tpr - fpr
     best_idx = np.argmax(youden_values)
@@ -52,7 +63,7 @@ def evaluate_model(model, dataloader, device):
     sensitivity = tpr[best_idx]
     specificity = 1 - fpr[best_idx]
 
-    # Compute accuracy and F1 at that threshold
+    # Compute accuracy and F1 at best threshold
     preds = (all_probs >= best_threshold).astype(int)
     acc = np.mean(preds == all_labels)
     f1 = f1_score(all_labels, preds)
