@@ -410,7 +410,7 @@ def main(model_type, cohort_id, **kwargs):
     logger.info(f"Using cohort split {cohort_id}")
 
     # ---- Resolve subjects per split ----
-    subjects = np.loadtxt("../../data/test_subjs.txt", dtype=str)
+    subjects = np.loadtxt("../../data/subjects.txt", dtype=str)
     shuffled_subjects = np.random.RandomState(SEED).permutation(subjects)
     splits = get_splits(shuffled_subjects, n_splits=kwargs["parameters"]["n_folds"])
     train_subjs, val_subjs, test_subjs = splits[cohort_id - 1]
@@ -496,7 +496,7 @@ def main(model_type, cohort_id, **kwargs):
     results_df = pd.DataFrame(results)
     outdir = Path("../../results")
     outdir.mkdir(exist_ok=True, parents=True)
-    results_df.to_csv(outdir / f"{model_type}_cohort{cohort_id}_hp_search_results.csv", index=False)
+    results_df.to_csv(outdir / f"{model_type}_seed{SEED}_cohort{cohort_id}_hp_search_results.csv", index=False)
 
     # ---- Test on best model ----
     logger.success(f"Best hyperparameters: {best_config}")
@@ -507,18 +507,26 @@ def main(model_type, cohort_id, **kwargs):
     model.load_state_dict(best_state)
     model.float()  # Convert to float32 for evaluation to avoid bfloat16/float32 type mismatch
 
+    all_metrics = []
     for subj in test_subjs:
         logger.info(f"Evaluating subject {subj}:")
         test_dataset = SEEGDataset(subjects=[subj], embed_dim=best_config["embed_dim"])
-        metrics = evaluate_model(
-            model, DataLoader(test_dataset, batch_size=kwargs['parameters']['batch_size'], shuffle=False), device
-        )
-        metrics.update(best_config)
-        metrics["subj"] = subj
+        try:
+            metrics = evaluate_model(
+                model, DataLoader(test_dataset, batch_size=kwargs['parameters']['batch_size'], shuffle=False), device
+            )
+            metrics.update(best_config)
+            metrics["subj"] = subj
+        except Exception as e:
+            logger.error(f"Error evaluating subject {subj}: {e}")
+            continue
         del test_dataset
+        all_metrics.append(metrics)
 
-    df = pd.DataFrame([metrics])
-    df.to_csv(outdir / f"{model_type}_cohort{cohort_id}_test_results.csv", index=False)
+    first_column=["subj"]
+    all_columns = first_column + [k for k in all_metrics[0].keys() if k != "subj"]
+    df = pd.DataFrame(all_metrics, columns=all_columns)
+    df.to_csv(outdir / f"{model_type}_seed{SEED}_cohort{cohort_id}_test_results.csv", index=False)
 
     logger.success("Finished cohort run")
 
