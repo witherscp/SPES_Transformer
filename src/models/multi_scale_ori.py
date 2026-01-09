@@ -325,13 +325,13 @@ class MSResNet(nn.Module):
         self.layer5x5_1 = self._make_layer5(BasicBlock5x5, 64, layers[0], stride=2)
         self.layer5x5_2 = self._make_layer5(BasicBlock5x5, 128, layers[1], stride=2)
         self.layer5x5_3 = self._make_layer5(BasicBlock5x5, 256, layers[2], stride=2)
-        self.avgpool5 = nn.AvgPool1d(kernel_size=10, stride=1, padding=0)
+        self.avgpool5 = nn.AvgPool1d(kernel_size=11, stride=1, padding=0)
 
         # 7x7 kernel path
         self.layer7x7_1 = self._make_layer7(BasicBlock7x7, 64, layers[0], stride=2)
         self.layer7x7_2 = self._make_layer7(BasicBlock7x7, 128, layers[1], stride=2)
         self.layer7x7_3 = self._make_layer7(BasicBlock7x7, 256, layers[2], stride=2)
-        self.avgpool7 = nn.AvgPool1d(kernel_size=5, stride=1, padding=0)
+        self.avgpool7 = nn.AvgPool1d(kernel_size=6, stride=1, padding=0)
 
         # Final layers
         self.drop = nn.Dropout(p=dropout_rate)
