@@ -931,6 +931,9 @@ def _load_pat_coords(subj, subj_seeg_dir, bip_lut):
     if contacts["Short"].isnull().any():
         missing = contacts[contacts["Short"].isnull()]["Long"].tolist()
         logger.error(f"Missing short labels for contacts: {missing}")
+        logger.error(
+            f"This can probably be fixed by modifying raw_contact_names.csv to match the left column of crave_edf_LUT.csv"
+        )
         return pd.DataFrame()
 
     contacts["Contact"] = contacts["Short"] + contacts["Num"].astype(str)
