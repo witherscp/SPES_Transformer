@@ -22,6 +22,7 @@ parameters:
   tol_ms: 50  # maximum tolerance for SPES peak detection
   artifact_pad_ms: 15.0 # padding in ms to add before and after each pulse for artifact removal
   zscore_baseline_end_s: 2.5 # length in s of time period to z-score pulses based on
+  target_fs: 512  # Target sampling frequency for resampling signals
 
   ## Training
   # General

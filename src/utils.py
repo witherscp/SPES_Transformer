@@ -9,6 +9,7 @@ import mat73
 from scipy.io import loadmat as lm
 import re
 import torch
+import mne
 
 
 def move_to_device(obj, device):
@@ -659,7 +660,32 @@ def loadmat_spes(file_path, data=["all"], verbose=False):
     return outputs
 
 
-def load_spes_data(subj):
+def resample_signal(signal, fs, labels, target_fs=512):
+    """Resample the signal to the target sampling frequency.
+
+    Args:
+        signal (np.ndarray): The input signal with shape (n_channels, n_samples).
+        fs (int): The original sampling frequency of the signal.
+        labels (list): List of channel labels.
+        target_fs (int): The target sampling frequency. Default is 512 Hz.
+
+    Returns:
+        np.ndarray: The resampled signal with shape (n_channels, n_resampled_samples).
+    """
+
+    info = mne.create_info(
+        ch_names=[c for c in labels],
+        sfreq=fs,
+        ch_types="seeg",
+    )
+    raw = mne.io.RawArray(signal, info)
+    raw_resampled = raw.copy().resample(target_fs, npad="auto")
+    resampled_signal = raw_resampled.get_data()
+
+    return resampled_signal
+
+
+def load_spes_data(subj, default_fs=512):
     """Load SPES data for a given subject.
     Args:
         subj (str): Subject identifier.
@@ -694,9 +720,13 @@ def load_spes_data(subj):
     fs = mat_dict["fs"]
     config_params = mat_dict["config_params"]
 
+    # check fs
+    if default_fs != fs:
+        logger.warning(f"Resampling from {fs} Hz to {default_fs} Hz.")
+
     master_dict["stim_sequence"] = stim_sequence
     master_dict["labels"] = labels
-    master_dict["fs"] = fs
+    master_dict["fs"] = default_fs
     master_dict["config_params"] = config_params
 
     tol_ms = config["parameters"]["tol_ms"]
@@ -734,6 +764,10 @@ def load_spes_data(subj):
                     < train_data.shape[1]
                     < expected_length + tol_length
                 ):
+
+                    if fs != default_fs:
+                        train_data = resample_signal(train_data, fs, labels, target_fs=default_fs)
+
                     stim_dict[f"{stim_block}_train{trains}"] = {
                         "data": train_data,
                         "pulse_times": pulse_times,
@@ -769,6 +803,11 @@ def load_spes_data(subj):
                         < train_data.shape[1]
                         < expected_length + tol_length
                     ):
+                        if fs != default_fs:
+                            train_data = resample_signal(
+                                train_data, fs, labels, target_fs=default_fs
+                            )
+
                         stim_dict[f"{stim_block}_train{train}"] = {
                             "data": train_data,
                             "pulse_times": pulse_times,

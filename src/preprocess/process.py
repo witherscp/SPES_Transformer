@@ -65,7 +65,7 @@ def build_subject_pt(subj, **kwargs):
     ## ------ Load and format pulse data ------
 
     # Get paths to all .mat train files
-    spes_data_dict = load_spes_data(subj)
+    spes_data_dict = load_spes_data(subj, default_fs=kwargs["parameters"]["target_fs"])
 
     # check existence of train paths
     if len(spes_data_dict) == 0:
