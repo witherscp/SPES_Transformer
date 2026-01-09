@@ -9,7 +9,12 @@ import torch.nn as nn
 
 class SEEGDataset(Dataset):
     def __init__(
-        self, subjects=None, data_dir="../../data/processed", transform=None, embed_dim=128, verbose=True
+        self,
+        subjects=None,
+        data_dir="../../data/processed",
+        transform=None,
+        embed_dim=128,
+        verbose=True,
     ):
         """
         Args:
@@ -38,9 +43,9 @@ class SEEGDataset(Dataset):
 
             if verbose:
                 logger.info(
-                    f"Loading subject {subj}, n_targets={len(subj_data['targets'])}, "
-                    f"n_soz = {subj_data['target_labels'].sum()}, n_stim={subj_data['convergent']['data'][0].shape[0]}, "
-                    f"n_resp={subj_data['divergent']['data'][0].shape[0]}, "
+                    f"Loading subject {subj}, "
+                    f"n_stim={subj_data['convergent']['data'][0].shape[0]}, n_soz = {subj_data['target_labels'].sum()}, "
+                    f"n_resp={subj_data['divergent']['data'][0].shape[0]}"
                 )
 
             # Each subject may have multiple electrodes (targets)
