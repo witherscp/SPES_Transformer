@@ -27,13 +27,14 @@ parameters:
   # General
   batch_size: 6
   n_steps_per_update: 1
-  n_epochs: 20
+  n_epochs: 1
   patience: 3
   n_folds: 5
   sz_free_only: false
   use_clipping: false
   clip_max_norm: 10.0   # only applies if clipping set to true
   random_seed: 1
+  n_hp_searches: 1
 
   # Hyperparameter search spaces
   search:
@@ -46,7 +47,7 @@ parameters:
     num_layers:
       type: int
       low: 2
-      high: 8
+      high: 6
 
     n_heads:
       type: categorical
