@@ -3,7 +3,7 @@ from src.utils import move_to_device
 from loguru import logger
 import torch
 import numpy as np
-from sklearn.metrics import roc_auc_score, f1_score, confusion_matrix, roc_curve
+from sklearn.metrics import roc_auc_score, f1_score, roc_curve
 
 
 def evaluate_model(model, dataloader, device):
