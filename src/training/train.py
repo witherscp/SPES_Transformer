@@ -91,6 +91,7 @@ def train_model(
     n_steps_per_update=1,
     patience=5,
     use_val=True,
+    use_tensorboard=False,
     **kwargs,
 ):
     """
@@ -108,6 +109,7 @@ def train_model(
         n_steps_per_update: gradient accumulation steps (default: 1)
         patience: early stopping patience (# consecutive epochs without improvement) (default: 5)
         use_val: whether to use validation set for early stopping (default: True)
+        use_tensorboard: whether to log to TensorBoard (default: False)
 
     Returns:
         model: trained model (with best weights loaded)
@@ -119,9 +121,9 @@ def train_model(
     model.to(device)
 
     # --- TensorBoard setup ---
-    tb_run_name = f"{save_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-    writer = SummaryWriter(log_dir=f"{kwargs['paths']['tb_logs_path']}/{tb_run_name}")
+    if use_tensorboard:
+        tb_run_name = f"{save_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        writer = SummaryWriter(log_dir=f"{kwargs['paths']['tb_logs_path']}/{tb_run_name}")
 
     best_val_loss = float("inf")
     best_epoch = 0
@@ -159,7 +161,8 @@ def train_model(
 
             # global_step starts from 0
             global_step = (epoch - 1) * len(dataloaders["train"]) + step
-            writer.add_scalar("Batch/Loss", loss.item(), global_step)
+            if use_tensorboard:
+                writer.add_scalar("Batch/Loss", loss.item(), global_step)
 
             loss.backward()
 
@@ -168,7 +171,8 @@ def train_model(
             _, preds = torch.max(outputs, 1)
             train_correct += torch.sum(preds == labels.data)
 
-            log_param_stats(model, writer, global_step)
+            if use_tensorboard:
+                log_param_stats(model, writer, global_step)
 
             if (step + 1) % n_steps_per_update == 0:
                 if kwargs["parameters"]["use_clipping"]:
@@ -180,17 +184,18 @@ def train_model(
                 if scheduler is not None:
                     scheduler.step()
 
-            # gradient norm (computed from current grads)
-            total_norm = 0.0
-            for p in model.parameters():
-                if p.grad is not None:
-                    param_norm = p.grad.data.norm(2)
-                    total_norm += float(param_norm.item()) ** 2
-            writer.add_scalar("Batch/GradNorm", total_norm**0.5, global_step)
+            if use_tensorboard:
+                # gradient norm (computed from current grads)
+                total_norm = 0.0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        param_norm = p.grad.data.norm(2)
+                        total_norm += float(param_norm.item()) ** 2
+                writer.add_scalar("Batch/GradNorm", total_norm**0.5, global_step)
 
-            # log LR (supports multiple param groups)
-            for idx, param_group in enumerate(optimizer.param_groups):
-                writer.add_scalar(f"LR/group{idx}", param_group["lr"], global_step)
+                # log LR (supports multiple param groups)
+                for idx, param_group in enumerate(optimizer.param_groups):
+                    writer.add_scalar(f"LR/group{idx}", param_group["lr"], global_step)
 
         epoch_train_loss = train_loss / len(dataloaders["train"].dataset)
         epoch_train_acc = train_correct.double() / len(dataloaders["train"].dataset)
@@ -234,19 +239,20 @@ def train_model(
             history["val_loss"].append(epoch_val_loss)
             history["val_acc"].append(epoch_val_acc.item())
 
-        writer.add_scalar("Epoch/Train_Loss", epoch_train_loss, epoch)
-        writer.add_scalar("Epoch/Train_Acc", epoch_train_acc, epoch)
+        if use_tensorboard:
+            writer.add_scalar("Epoch/Train_Loss", epoch_train_loss, epoch)
+            writer.add_scalar("Epoch/Train_Acc", epoch_train_acc, epoch)
 
-        if use_val:
-            writer.add_scalar("Epoch/Val_Loss", epoch_val_loss, epoch)
-            writer.add_scalar("Epoch/Val_Acc", epoch_val_acc, epoch)
+            if use_val:
+                writer.add_scalar("Epoch/Val_Loss", epoch_val_loss, epoch)
+                writer.add_scalar("Epoch/Val_Acc", epoch_val_acc, epoch)
 
-        # --- Weight histograms (epoch-level) ---
-        for name, param in model.named_parameters():
-            writer.add_histogram(f"Weights/{name}", param, epoch)
-            # epoch-level grads are often None; keep optional
-            if param.grad is not None:
-                writer.add_histogram(f"Grads/{name}", param.grad, epoch)
+            # --- Weight histograms (epoch-level) ---
+            for name, param in model.named_parameters():
+                writer.add_histogram(f"Weights/{name}", param, epoch)
+                # epoch-level grads are often None; keep optional
+                if param.grad is not None:
+                    writer.add_histogram(f"Grads/{name}", param.grad, epoch)
 
         # Save checkpoint for every epoch
         torch.save(model.state_dict(), save_dir / f"{save_prefix}_epoch_{epoch}.pt")
@@ -255,27 +261,25 @@ def train_model(
         if use_val:
             improved = epoch_val_loss < best_val_loss
             if improved:
+                epochs_no_improve = 0
                 best_val_loss = epoch_val_loss
                 best_epoch = epoch
                 best_weights = model.state_dict()
-                torch.save(best_weights, save_dir / f"{save_prefix}_best_model.pt")
-
-            if epoch > min_epochs:
-                if improved:
-                    epochs_no_improve = 0
-                else:
-                    epochs_no_improve += 1
-                    if epochs_no_improve > patience:
-                        logger.success(
-                            f"⏹ Early stopping at epoch {epoch} (no val loss improvement for {patience} epochs)"
-                        )
-                        model.load_state_dict(best_weights)
-                        break
+                torch.save(best_weights, save_dir / f"{save_prefix}_best_model.pt")     
+            else:
+                epochs_no_improve += 1
+                if epochs_no_improve > patience:
+                    logger.success(
+                        f"⏹ Early stopping at epoch {epoch} (no val loss improvement for {patience} epochs)"
+                    )
+                    model.load_state_dict(best_weights)
+                    break
         else:
             # assume most recent epoch is best
             best_epoch = epoch
 
-    writer.close()
+    if use_tensorboard:
+        writer.close()
 
     return model, history, best_epoch
 
@@ -391,6 +395,9 @@ def build_model_optim_scheduler(model_type, hp, device, dataloaders=None, evalua
                 pct_start=hp["pct_start"],
                 anneal_strategy="cos",
             )
+        else:
+            optimizer = None
+            scheduler = None
     else:
         logger.error(f"Only model_type == 'Fusion' is currently supported. Exiting ...")
         sys.exit(1)
@@ -404,7 +411,8 @@ def main(model_type, cohort_id, **kwargs):
 
     # ---- Resolve subjects per split ----
     subjects = np.loadtxt("../../data/test_subjs.txt", dtype=str)
-    splits = get_splits(subjects, n_splits=kwargs["parameters"]["n_folds"])
+    shuffled_subjects = np.random.RandomState(SEED).permutation(subjects)
+    splits = get_splits(shuffled_subjects, n_splits=kwargs["parameters"]["n_folds"])
     train_subjs, val_subjs, test_subjs = splits[cohort_id - 1]
 
     logger.info(f"Train subjects: {train_subjs}")
@@ -417,7 +425,7 @@ def main(model_type, cohort_id, **kwargs):
     best_config = None
     results = []
 
-    for hp_id in range(20):
+    for hp_id in range(1,kwargs['parameters']['n_hp_searches']+1):
 
         # Get hyperparameters
         hp = sample_hyperparameters(kwargs, cohort_id, hp_id)
@@ -452,6 +460,9 @@ def main(model_type, cohort_id, **kwargs):
             scheduler=scheduler,
             device=device,
             save_prefix=f"cohort{cohort_id}_hp{hp_id}",
+            n_epochs=kwargs['parameters']['n_epochs'],
+            n_steps_per_update=kwargs['parameters']['n_steps_per_update'],
+            patience=kwargs['parameters']['patience'],
             use_val=True,
             cohort_id=cohort_id,
             **kwargs,
@@ -464,6 +475,7 @@ def main(model_type, cohort_id, **kwargs):
                 "cohort_id": cohort_id,
                 "hp_id": hp_id,
                 "val_loss": val_loss,
+                "best_epoch": best_epoch,
                 **hp,
             }
         )
@@ -476,25 +488,37 @@ def main(model_type, cohort_id, **kwargs):
         del model, train_ds, val_ds, full_dataset
         torch.cuda.empty_cache()
 
-    # ---- Test on best model ----
-    logger.success("Testing on best model")
+    # ---- Log hyperparameter results ----
+    logger.success("Hyperparameter search complete!")
+    logger.info("Results:")
+    for result in results:
+        logger.info(result)
+    results_df = pd.DataFrame(results)
+    outdir = Path("../../results")
+    outdir.mkdir(exist_ok=True, parents=True)
+    results_df.to_csv(outdir / f"{model_type}_cohort{cohort_id}_hp_search_results.csv", index=False)
 
-    test_dataset = SEEGDataset(subjects=test_subjs, embed_dim=best_config["embed_dim"])
+    # ---- Test on best model ----
+    logger.success(f"Best hyperparameters: {best_config}")
+    logger.info("Testing on best model from hyperparameter search.")
 
     model, _, _ = build_model_optim_scheduler(model_type, best_config, device, evaluate=True)
 
     model.load_state_dict(best_state)
+    model.float()  # Convert to float32 for evaluation to avoid bfloat16/float32 type mismatch
 
-    metrics = evaluate_model(
-        model, DataLoader(test_dataset, batch_size=best_config["batch_size"], shuffle=False), device
-    )
-    metrics.update(best_config)
-    metrics["cohort_id"] = cohort_id
+    for subj in test_subjs:
+        logger.info(f"Evaluating subject {subj}:")
+        test_dataset = SEEGDataset(subjects=[subj], embed_dim=best_config["embed_dim"])
+        metrics = evaluate_model(
+            model, DataLoader(test_dataset, batch_size=kwargs['parameters']['batch_size'], shuffle=False), device
+        )
+        metrics.update(best_config)
+        metrics["subj"] = subj
+        del test_dataset
 
     df = pd.DataFrame([metrics])
-    outdir = Path("../../results")
-    outdir.mkdir(exist_ok=True, parents=True)
-    df.to_csv(outdir / f"{model_type}_cohort{cohort_id}_test.csv", index=False)
+    df.to_csv(outdir / f"{model_type}_cohort{cohort_id}_test_results.csv", index=False)
 
     logger.success("Finished cohort run")
 

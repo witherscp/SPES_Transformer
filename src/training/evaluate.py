@@ -13,6 +13,7 @@ def evaluate_model(model, dataloader, device):
     Returns:
         dict with accuracy, AUROC, F1, sensitivity, specificity, Youden index
     """
+    model.to(device)
     model.eval()
     all_labels = []
     all_probs = []
