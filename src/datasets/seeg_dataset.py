@@ -50,7 +50,7 @@ class SEEGDataset(Dataset):
 
             # Each subject may have multiple electrodes (targets)
             n_targets = len(subj_data["targets"])
-            conv_currents = subj_data["convergent"]["stim_trial_currents"]  # [n_stims, n_trials]
+            # conv_currents = subj_data["convergent"]["stim_trial_currents"]  # [n_stims, n_trials]
             conv_coords = subj_data["convergent"]["stim_trial_coords"]  # [n_stims, 3]
             div_coords = subj_data["divergent"]["response_trial_coords"]  # [n_responses, 3]
 
@@ -60,10 +60,10 @@ class SEEGDataset(Dataset):
                 y = subj_data["target_labels"][t]
 
                 # reshape div_currents to [n_responses, n_trials]
-                div_currents = subj_data["divergent"]["target_trial_currents"][t]  # [n_trials]
-                div_currents = torch.tile(
-                    div_currents, dims=(x_div.shape[0], 1)
-                )  # [n_responses, n_trials]
+                # div_currents = subj_data["divergent"]["target_trial_currents"][t]  # [n_trials]
+                # div_currents = torch.tile(
+                #     div_currents, dims=(x_div.shape[0], 1)
+                # )  # [n_responses, n_trials]
 
                 max_stims = max(max_stims, x_conv.shape[0])
                 max_responses = max(max_responses, x_div.shape[0])
@@ -72,8 +72,8 @@ class SEEGDataset(Dataset):
                 )  # assuming conv and div have same n_trials
 
                 # coordinate masks
-                conv_coord_mask = torch.all(torch.isnan(conv_currents), dim=1)
-                div_coord_mask = torch.all(torch.isnan(div_currents), dim=1)
+                conv_coord_mask = torch.all(torch.isnan(conv_coords), dim=1)
+                div_coord_mask = torch.all(torch.isnan(div_coords), dim=1)
                 conv_coords = self.pos_encoder(conv_coords)
                 div_coords = self.pos_encoder(div_coords)
                 conv_coords[conv_coord_mask] = torch.full((self.embed_dim,), np.nan)
@@ -84,8 +84,8 @@ class SEEGDataset(Dataset):
                     "target_idx": t,
                     "convergent": x_conv,
                     "divergent": x_div,
-                    "convergent_currents": conv_currents,
-                    "divergent_currents": div_currents,
+                    # "convergent_currents": conv_currents,
+                    # "divergent_currents": div_currents,
                     "convergent_coords": conv_coords,
                     "divergent_coords": div_coords,
                     "label": y,
@@ -122,26 +122,26 @@ class SEEGDataset(Dataset):
                 ),
                 value=np.nan,
             )
-            sample["divergent_currents"] = torch.nn.functional.pad(
-                sample["divergent_currents"],
-                (
-                    0,
-                    max_trials - sample["divergent_currents"].shape[1],
-                    0,
-                    max_responses - sample["divergent_currents"].shape[0],
-                ),
-                value=0,
-            )
-            sample["convergent_currents"] = torch.nn.functional.pad(
-                sample["convergent_currents"],
-                (
-                    0,
-                    max_trials - sample["convergent_currents"].shape[1],
-                    0,
-                    max_stims - sample["convergent_currents"].shape[0],
-                ),
-                value=0,
-            )
+            # sample["divergent_currents"] = torch.nn.functional.pad(
+            #     sample["divergent_currents"],
+            #     (
+            #         0,
+            #         max_trials - sample["divergent_currents"].shape[1],
+            #         0,
+            #         max_responses - sample["divergent_currents"].shape[0],
+            #     ),
+            #     value=0,
+            # )
+            # sample["convergent_currents"] = torch.nn.functional.pad(
+            #     sample["convergent_currents"],
+            #     (
+            #         0,
+            #         max_trials - sample["convergent_currents"].shape[1],
+            #         0,
+            #         max_stims - sample["convergent_currents"].shape[0],
+            #     ),
+            #     value=0,
+            # )
             sample["divergent_coords"] = torch.nn.functional.pad(
                 sample["divergent_coords"],
                 (
@@ -174,8 +174,8 @@ class SEEGDataset(Dataset):
             # Replace nan with zeros for model input
             sample["convergent"] = torch.nan_to_num(sample["convergent"], nan=0)
             sample["divergent"] = torch.nan_to_num(sample["divergent"], nan=0)
-            sample["convergent_currents"] = torch.nan_to_num(sample["convergent_currents"], nan=0)
-            sample["divergent_currents"] = torch.nan_to_num(sample["divergent_currents"], nan=0)
+            # sample["convergent_currents"] = torch.nan_to_num(sample["convergent_currents"], nan=0)
+            # sample["divergent_currents"] = torch.nan_to_num(sample["divergent_currents"], nan=0)
             sample["convergent_coords"] = torch.nan_to_num(sample["convergent_coords"], nan=0)
             sample["divergent_coords"] = torch.nan_to_num(sample["divergent_coords"], nan=0)
 
