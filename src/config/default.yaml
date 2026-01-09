@@ -24,27 +24,49 @@ parameters:
   zscore_baseline_end_s: 2.5 # length in s of time period to z-score pulses based on
 
   ## Training
-  # Train
+  # General
   batch_size: 6
-  sz_free_only: false
-  n_epochs: 6
   n_steps_per_update: 1
-  patience: 6
-  min_epochs: 0
-  val_ratio: 0
+  n_epochs: 20
+  patience: 3
+  n_folds: 5
+  sz_free_only: false
   use_clipping: false
   clip_max_norm: 10.0   # only applies if clipping set to true
   random_seed: 1
 
-  # Model
-  embed_dim: 256
-  num_layers: 2
-  n_heads: 8
+  # Hyperparameter search spaces
+  search:
+    embed_dim:
+      type: int
+      low: 128
+      high: 320
+      step: 32
 
-  # Optimizer
-  weight_decay: 4.2736128332696716e-05
+    num_layers:
+      type: int
+      low: 2
+      high: 8
 
-  # Scheduler
-  base_lr: 1.1524771622578236e-06
-  max_lr: 5.355298326119835e-05
-  pct_start: 0.4381293521209439
+    n_heads:
+      type: categorical
+      choices: [2, 4, 8]
+
+    weight_decay:
+      type: loguniform
+      low: 1.0e-5
+      high: 1.0e-3
+
+    base_lr:
+      type: loguniform
+      low: 1.0e-7
+      high: 3.0e-4
+
+    max_lr:
+      type: loguniform
+      high: 5.0e-3
+
+    pct_start:
+      type: uniform
+      low: 0.05
+      high: 0.55

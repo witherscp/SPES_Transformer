@@ -1,10 +1,13 @@
 from datetime import datetime
 import time
 from tqdm import tqdm
+import math
 import random
 from pathlib import Path
 from loguru import logger
 from argparse import ArgumentParser
+import json
+import sys
 
 import numpy as np
 import pandas as pd
@@ -20,6 +23,61 @@ from src.models.model import SEEGFusionModel, BaselineModel
 from src.training.evaluate import evaluate_model
 
 
+def sample_hyperparameters(kwargs, cohort_id, hp_id):
+    """
+    Sample a single hyperparameter configuration from the YAML-defined
+    search space in kwargs['parameters']["search"].
+
+    Args:
+        kwargs (dict): loaded YAML config
+        rng (np.random.Generator or None): optional RNG for reproducibility
+
+    Returns:
+        dict: sampled hyperparameters
+    """
+
+    rng = np.random.default_rng(SEED + hp_id)
+
+    search_space = kwargs["parameters"]["search"]
+    hp = {}
+
+    for name, spec in search_space.items():
+        hp_type = spec["type"]
+
+        if hp_type == "int":
+            low = spec["low"]
+            high = spec["high"]
+            step = spec.get("step", 1)
+
+            values = list(range(low, high + 1, step))
+            hp[name] = int(rng.choice(values))
+
+        elif hp_type == "categorical":
+            hp[name] = int(rng.choice(spec["choices"]))
+
+        elif hp_type == "uniform":
+            hp[name] = float(rng.uniform(spec["low"], spec["high"]))
+
+        elif hp_type == "loguniform":
+            try:
+                low = math.log(spec["low"])
+            except KeyError:
+                low = math.log(hp["base_lr"])
+            high = math.log(spec["high"])
+            hp[name] = float(math.exp(rng.uniform(low, high)))
+
+        else:
+            raise ValueError(f"Unknown hyperparameter type: {hp_type}")
+
+    save_dir = Path(f"../../experiments/cohort{cohort_id}")
+    save_dir.mkdir(exist_ok=True, parents=True)
+
+    with open(save_dir / f"cohort{cohort_id}_hp{hp_id}.json", "w") as f:
+        json.dump(hp, f, indent=2)
+
+    return hp
+
+
 def train_model(
     model,
     dataloaders,
@@ -27,11 +85,11 @@ def train_model(
     optimizer,
     device,
     save_prefix,
+    cohort_id,
     scheduler=None,
     n_epochs=50,
     n_steps_per_update=1,
     patience=5,
-    min_epochs=5,
     use_val=True,
     **kwargs,
 ):
@@ -44,11 +102,11 @@ def train_model(
         optimizer: optimizer
         device: torch device
         save_prefix: prefix for saving out model weights
+        cohort_id: cohort ID for saving
         scheduler: learning rate scheduler (optional)
         n_epochs: int, number of epochs (default: 50)
         n_steps_per_update: gradient accumulation steps (default: 1)
         patience: early stopping patience (# consecutive epochs without improvement) (default: 5)
-        min_epochs: minimum number of epochs before patience starts aggregating (default: 5)
         use_val: whether to use validation set for early stopping (default: True)
 
     Returns:
@@ -56,14 +114,14 @@ def train_model(
         history: dict with losses and accuracies
         best_epoch: epoch with best validation loss
     """
-    save_dir = Path(f"../experiments")
+    save_dir = Path(f"../../experiments/cohort{cohort_id}")
     save_dir.mkdir(exist_ok=True, parents=True)
     model.to(device)
 
     # --- TensorBoard setup ---
     tb_run_name = f"{save_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-    writer = SummaryWriter(log_dir=f"{kwargs['Paths']['tb_logs_path']}/{tb_run_name}")
+    writer = SummaryWriter(log_dir=f"{kwargs['paths']['tb_logs_path']}/{tb_run_name}")
 
     best_val_loss = float("inf")
     best_epoch = 0
@@ -113,9 +171,9 @@ def train_model(
             log_param_stats(model, writer, global_step)
 
             if (step + 1) % n_steps_per_update == 0:
-                if kwargs["Parameters"]["use_clipping"]:
+                if kwargs["parameters"]["use_clipping"]:
                     nn.utils.clip_grad_norm_(
-                        model.parameters(), max_norm=kwargs["Parameters"]["clip_max_norm"]
+                        model.parameters(), max_norm=kwargs["parameters"]["clip_max_norm"]
                     )
                 optimizer.step()
 
@@ -229,6 +287,26 @@ def compute_class_weights(train_ds):
     return torch.from_numpy(weight).float()
 
 
+def get_splits(subjects, n_splits=5):
+
+    # Create inner splits
+    # Each inner split will be train*3, val, test
+    inner_splits = []
+
+    subj_splits = np.array_split(subjects, n_splits)
+    duplicated_splits = subj_splits * 2
+
+    for i in range(n_splits):
+
+        val_subjs = duplicated_splits[i]
+        test_subjs = duplicated_splits[i + 1]
+        train_subjs = np.hstack(duplicated_splits[i + 2 : i + 5])
+
+        inner_splits.append((train_subjs, val_subjs, test_subjs))
+
+    return inner_splits
+
+
 def log_param_stats(model, writer, step):
     """Logs per-parameter and global parameter norms and update norms."""
     total_param_norm = 0.0
@@ -284,189 +362,141 @@ def get_subject_indices(dataset, subj_list):
     return [i for i, s in enumerate(dataset.data) if s["subject"] in subj_list]
 
 
-def main(model_type, **kwargs):
+def build_model_optim_scheduler(model_type, hp, device, dataloaders=None, evaluate=False, **kwargs):
 
-    # Load dataset
-    sz_free_subjects = [
-        "Epat31",
-        "Epat35",
-        "Epat37",
-        "Epat38",
-        "Spat31",
-        "Spat37",
-        "Spat41",
-        "Spat42",
-    ]
-
-    if kwargs["Parameters"]["sz_free_only"]:
-        full_dataset = SEEGDataset(
-            subjects=sz_free_subjects, embed_dim=kwargs["Parameters"]["embed_dim"]
+    if model_type == "Fusion":
+        model = SEEGFusionModel(
+            embed_dim=hp["embed_dim"],
+            num_layers=hp["num_layers"],
+            n_heads=hp["n_heads"],
+            n_classes=2,
+            device=device,
         )
-    else:
-        full_dataset = SEEGDataset(embed_dim=kwargs["Parameters"]["embed_dim"])
+        if not evaluate:
+            if dataloaders is None:
+                logger.error(f"dataloaders must be provided when not evaluating. Exiting ...")
+                sys.exit(1)
 
-    n_inner_splits = 5
-    val_ratio = kwargs["Parameters"]["val_ratio"]
-    if val_ratio > 0:
-        use_val = True
-    else:
-        use_val = False
+            optimizer = optim.AdamW(
+                model.parameters(),
+                lr=hp["base_lr"],
+                weight_decay=hp["weight_decay"],
+            )
 
-    metric_dict = {}
-    for test_subj in full_dataset.subjects:
-        logger.info(f"\n=== Test subject: {test_subj} ===")
-        remaining_subjs = [s for s in full_dataset.subjects if s != test_subj]
-
-        # Outer split: test vs remaining
-        test_idx = get_subject_indices(full_dataset, [test_subj])
-        test_ds = Subset(full_dataset, test_idx)
-
-        # Shuffle remaining subjects so different folds vary
-        random.shuffle(remaining_subjs)
-
-        if use_val:
-            # Create inner splits
-            inner_splits = []
-            # Split based on val_ratio
-            n_val_subjs = int(len(remaining_subjs) * val_ratio)
-            for i in range(n_inner_splits):
-                # rotate subjects for different validation sets
-                if (i + 1) * n_val_subjs > len(remaining_subjs):
-                    val_subjs = remaining_subjs[i * n_val_subjs :]
-                else:
-                    val_subjs = remaining_subjs[i * n_val_subjs : (i + 1) * n_val_subjs]
-                train_subjs = [s for s in remaining_subjs if s not in val_subjs]
-                inner_splits.append((train_subjs, val_subjs))
-        else:
-            inner_splits = [(remaining_subjs, [])]
-
-        # Run inner CV for this test subject
-        for k, (train_subjs, val_subjs) in enumerate(inner_splits):
-            logger.info(f"\nInner split {k+1}: train={train_subjs}, val={val_subjs}")
-
-            train_idx = get_subject_indices(full_dataset, train_subjs)
-            val_idx = get_subject_indices(full_dataset, val_subjs)
-
-            train_ds = Subset(full_dataset, train_idx)
-            val_ds = Subset(full_dataset, val_idx)
-
-            dataloaders = {
-                "train": DataLoader(
-                    train_ds,
-                    batch_size=kwargs["Parameters"]["batch_size"],
-                    shuffle=True,
-                    num_workers=0,
-                    worker_init_fn=seed_worker,
-                    generator=g,
-                ),
-                "val": DataLoader(
-                    val_ds,
-                    batch_size=kwargs["Parameters"]["batch_size"],
-                    shuffle=False,
-                    num_workers=0,
-                    worker_init_fn=seed_worker,
-                    generator=g,
-                ),
-                "test": DataLoader(
-                    test_ds,
-                    batch_size=kwargs["Parameters"]["batch_size"],
-                    shuffle=False,
-                    num_workers=0,
-                    worker_init_fn=seed_worker,
-                    generator=g,
-                ),
-            }
-
-            weights = compute_class_weights(train_ds)
-
-            if model_type == "Fusion":
-                model = SEEGFusionModel(
-                    embed_dim=kwargs["Parameters"]["embed_dim"],
-                    num_layers=kwargs["Parameters"]["num_layers"],
-                    n_heads=kwargs["Parameters"]["n_heads"],
-                    n_classes=2,
-                    device=device,
-                )
-                optimizer = optim.AdamW(
-                    model.parameters(),
-                    lr=kwargs["Parameters"]["base_lr"],
-                    weight_decay=kwargs["Parameters"]["weight_decay"],
-                )
-                scheduler = optim.lr_scheduler.OneCycleLR(
-                    optimizer=optimizer,
-                    max_lr=kwargs["Parameters"]["max_lr"],
-                    epochs=kwargs["Parameters"]["n_epochs"],
-                    steps_per_epoch=len(dataloaders["train"]),
-                    pct_start=kwargs["Parameters"]["pct_start"],
-                    anneal_strategy="cos",
-                )
-            elif model_type == "Baseline":
-                model = BaselineModel(
-                    embed_dim=kwargs["Parameters"]["embed_dim"],
-                    n_classes=2,
-                    stim_model="convergent",
-                    n_elecs=25,
-                    generator=g,
-                )
-                optimizer = optim.AdamW(
-                    model.parameters(),
-                    lr=1e-4
-                )
-                scheduler=None
-            model.to(device)
-
-            criterion = nn.CrossEntropyLoss(weight=weights.to(device))
-
-            if use_val:
-                save_prefix = f"{test_subj}_model_{model_type}_seed_{SEED}_split_{k+1}"
-            else:
-                save_prefix = f"{test_subj}_model_{model_type}_seed_{SEED}_final"
-
-            model, history, best_epoch = train_model(
-                model=model,
-                dataloaders=dataloaders,
-                criterion=criterion,
+            scheduler = optim.lr_scheduler.OneCycleLR(
                 optimizer=optimizer,
-                scheduler=scheduler,
-                device=device,
-                save_prefix=save_prefix,
-                n_epochs=kwargs["Parameters"]["n_epochs"],
-                patience=kwargs["Parameters"]["patience"],
-                min_epochs=kwargs["Parameters"]["min_epochs"],
-                n_steps_per_update=kwargs["Parameters"]["n_steps_per_update"],
-                use_val=use_val,
-                **kwargs,
+                max_lr=hp["max_lr"],
+                epochs=kwargs["parameters"]["n_epochs"],
+                steps_per_epoch=len(dataloaders["train"]),
+                pct_start=hp["pct_start"],
+                anneal_strategy="cos",
             )
+    else:
+        logger.error(f"Only model_type == 'Fusion' is currently supported. Exiting ...")
+        sys.exit(1)
 
-            logger.success(
-                f"✅ Training completed for test subject {test_subj}, inner split {k+1}. Best epoch: {best_epoch}"
-            )
+    return model, optimizer, scheduler
 
-            metrics = evaluate_model(model, dataloaders["test"], device)
-            metrics["best_epoch"] = best_epoch
-            metrics["train_loss"] = history["train_loss"][best_epoch - 1]
-            if use_val:
-                metrics["val_loss"] = history["val_loss"][best_epoch - 1]
-                metric_dict[f"{test_subj}_split_{k+1}"] = metrics
-            else:
-                metric_dict[f"{test_subj}"] = metrics
 
-            df = pd.DataFrame.from_dict(metric_dict, orient="index")
-            results_path = Path("../../results")
-            results_path.mkdir(exist_ok=True, parents=True)
-            if use_val:
-                fname = f"{model_type}_results_validation_seed_{SEED}.csv"
-            else:
-                fname = f"{model_type}_results_final_seed_{SEED}.csv"
-            df.to_csv(results_path / fname)
+def main(model_type, cohort_id, **kwargs):
 
-            del model, optimizer, scheduler, criterion, dataloaders
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+    logger.info(f"Using cohort split {cohort_id}")
 
-    logger.success(f"\n=== Summary of metrics across all test subjects and splits ===")
-    for key, value in metric_dict.items():
-        logger.success(f"{key}: {value}")
+    # ---- Resolve subjects per split ----
+    subjects = np.loadtxt("../../data/test_subjs.txt", dtype=str)
+    splits = get_splits(subjects, n_splits=kwargs["parameters"]["n_folds"])
+    train_subjs, val_subjs, test_subjs = splits[cohort_id - 1]
+
+    logger.info(f"Train subjects: {train_subjs}")
+    logger.info(f"Val subjects: {val_subjs}")
+    logger.info(f"Test subjects: {test_subjs}")
+
+    # ---- Hyperparameter sweep ----
+    best_val_loss = float("inf")
+    best_state = None
+    best_config = None
+    results = []
+
+    for hp_id in range(20):
+
+        # Get hyperparameters
+        hp = sample_hyperparameters(kwargs, cohort_id, hp_id)
+        logger.info(f"HP set {hp_id}: {hp}")
+
+        full_dataset = SEEGDataset(
+            subjects=np.hstack((train_subjs, val_subjs)), embed_dim=hp["embed_dim"]
+        )
+
+        # ---- Build datasets ----
+        train_ds = Subset(full_dataset, get_subject_indices(full_dataset, train_subjs))
+        val_ds = Subset(full_dataset, get_subject_indices(full_dataset, val_subjs))
+
+        dataloaders = {
+            "train": DataLoader(
+                train_ds, batch_size=kwargs["parameters"]["batch_size"], shuffle=True
+            ),
+            "val": DataLoader(val_ds, batch_size=kwargs["parameters"]["batch_size"], shuffle=False),
+        }
+
+        model, optimizer, scheduler = build_model_optim_scheduler(
+            model_type, hp, device, dataloaders, **kwargs
+        )
+
+        criterion = nn.CrossEntropyLoss(weight=compute_class_weights(train_ds).to(device))
+
+        model, history, best_epoch = train_model(
+            model=model,
+            dataloaders=dataloaders,
+            criterion=criterion,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            device=device,
+            save_prefix=f"cohort{cohort_id}_hp{hp_id}",
+            use_val=True,
+            cohort_id=cohort_id,
+            **kwargs,
+        )
+
+        val_loss = history["val_loss"][best_epoch - 1]
+
+        results.append(
+            {
+                "cohort_id": cohort_id,
+                "hp_id": hp_id,
+                "val_loss": val_loss,
+                **hp,
+            }
+        )
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state = model.state_dict()
+            best_config = hp
+
+        del model, train_ds, val_ds, full_dataset
+        torch.cuda.empty_cache()
+
+    # ---- Test on best model ----
+    logger.success("Testing on best model")
+
+    test_dataset = SEEGDataset(subjects=test_subjs, embed_dim=best_config["embed_dim"])
+
+    model, _, _ = build_model_optim_scheduler(model_type, best_config, device, evaluate=True)
+
+    model.load_state_dict(best_state)
+
+    metrics = evaluate_model(
+        model, DataLoader(test_dataset, batch_size=best_config["batch_size"], shuffle=False), device
+    )
+    metrics.update(best_config)
+    metrics["cohort_id"] = cohort_id
+
+    df = pd.DataFrame([metrics])
+    outdir = Path("../../results")
+    outdir.mkdir(exist_ok=True, parents=True)
+    df.to_csv(outdir / f"{model_type}_cohort{cohort_id}_test.csv", index=False)
+
+    logger.success("Finished cohort run")
 
 
 if __name__ == "__main__":
@@ -486,10 +516,19 @@ if __name__ == "__main__":
         default="../logs",
         help="Directory to save log files. Default is '../logs'.",
     )
+    parser.add_argument(
+        "-c",
+        "--cohort",
+        type=int,
+        choices=[1, 2, 3, 4, 5],
+        required=True,
+        help="Cohort split ID (1-5)",
+    )
 
     args = parser.parse_args()
     model_type = args.model
     logdir = args.logdir
+    cohort_id = args.cohort
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -510,7 +549,7 @@ if __name__ == "__main__":
 
     config = load_yaml()
 
-    SEED = config["Parameters"]["random_seed"]
+    SEED = config["parameters"]["random_seed"]
     torch.manual_seed(SEED)
     random.seed(SEED)
     np.random.seed(SEED)
@@ -519,4 +558,4 @@ if __name__ == "__main__":
     g = torch.Generator()
     g.manual_seed(SEED)
 
-    main(model_type, **config)
+    main(model_type, cohort_id, **config)
