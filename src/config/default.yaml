@@ -29,9 +29,8 @@ parameters:
   batch_size: 6
   n_steps_per_update: 1
   n_epochs: 1
-  patience: 3
+  patience: 5
   n_folds: 5
-  sz_free_only: false
   use_clipping: false
   clip_max_norm: 10.0   # only applies if clipping set to true
   random_seed: 1

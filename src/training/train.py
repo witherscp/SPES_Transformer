@@ -410,7 +410,7 @@ def main(model_type, cohort_id, **kwargs):
     logger.info(f"Using cohort split {cohort_id}")
 
     # ---- Resolve subjects per split ----
-    subjects = np.loadtxt("../../data/test_subjs.txt", dtype=str)
+    subjects = np.loadtxt("../../data/subjects.txt", dtype=str)
     shuffled_subjects = np.random.RandomState(SEED).permutation(subjects)
     splits = get_splits(shuffled_subjects, n_splits=kwargs["parameters"]["n_folds"])
     train_subjs, val_subjs, test_subjs = splits[cohort_id - 1]
@@ -518,15 +518,11 @@ def main(model_type, cohort_id, **kwargs):
     for subj in test_subjs:
         logger.info(f"Evaluating subject {subj}:")
         test_dataset = SEEGDataset(subjects=[subj], embed_dim=best_config["embed_dim"])
-        try:
-            metrics = evaluate_model(
-                model, DataLoader(test_dataset, batch_size=kwargs['parameters']['batch_size'], shuffle=False), device
-            )
-            metrics.update(best_config)
-            metrics["subj"] = subj
-        except Exception as e:
-            logger.error(f"Error evaluating subject {subj}: {e}")
-            continue
+        metrics = evaluate_model(
+            model, DataLoader(test_dataset, batch_size=kwargs['parameters']['batch_size'], shuffle=False), device
+        )
+        metrics.update(best_config)
+        metrics["subj"] = subj
         del test_dataset
         all_metrics.append(metrics)
 
