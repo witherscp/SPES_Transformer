@@ -69,7 +69,7 @@ def sample_hyperparameters(kwargs, cohort_id, hp_id):
         else:
             raise ValueError(f"Unknown hyperparameter type: {hp_type}")
 
-    save_dir = Path(f"../../experiments/cohort{cohort_id}")
+    save_dir = Path(f"../../experiments/seed{SEED}/cohort{cohort_id}")
     save_dir.mkdir(exist_ok=True, parents=True)
 
     with open(save_dir / f"cohort{cohort_id}_hp{hp_id}.json", "w") as f:
@@ -116,7 +116,7 @@ def train_model(
         history: dict with losses and accuracies
         best_epoch: epoch with best validation loss
     """
-    save_dir = Path(f"../../experiments/cohort{cohort_id}")
+    save_dir = Path(f"../../experiments/seed{SEED}/cohort{cohort_id}")
     save_dir.mkdir(exist_ok=True, parents=True)
     model.to(device)
 
@@ -410,7 +410,7 @@ def main(model_type, cohort_id, **kwargs):
     logger.info(f"Using cohort split {cohort_id}")
 
     # ---- Resolve subjects per split ----
-    subjects = np.loadtxt("../../data/subjects.txt", dtype=str)
+    subjects = np.loadtxt("../../data/test_subjs.txt", dtype=str)
     shuffled_subjects = np.random.RandomState(SEED).permutation(subjects)
     splits = get_splits(shuffled_subjects, n_splits=kwargs["parameters"]["n_folds"])
     train_subjs, val_subjs, test_subjs = splits[cohort_id - 1]
@@ -494,18 +494,25 @@ def main(model_type, cohort_id, **kwargs):
     for result in results:
         logger.info(result)
     results_df = pd.DataFrame(results)
-    outdir = Path("../../results")
+    outdir = Path(f"../../results/seed{SEED}")
     outdir.mkdir(exist_ok=True, parents=True)
     results_df.to_csv(outdir / f"{model_type}_seed{SEED}_cohort{cohort_id}_hp_search_results.csv", index=False)
 
     # ---- Test on best model ----
     logger.success(f"Best hyperparameters: {best_config}")
+    save_dir = Path(f"../../experiments/seed{SEED}/cohort{cohort_id}")
+    save_dir.mkdir(exist_ok=True, parents=True)
+    with open(save_dir / f"cohort{cohort_id}_hp_best_overall.json", "w") as f:
+        json.dump(best_config, f, indent=2)
+    
     logger.info("Testing on best model from hyperparameter search.")
 
     model, _, _ = build_model_optim_scheduler(model_type, best_config, device, evaluate=True)
 
     model.load_state_dict(best_state)
     model.float()  # Convert to float32 for evaluation to avoid bfloat16/float32 type mismatch
+
+    torch.save(model.state_dict(), save_dir / f"cohort{cohort_id}_best_overall_model.pt")   
 
     all_metrics = []
     for subj in test_subjs:
