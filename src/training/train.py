@@ -509,8 +509,8 @@ def main(model_type, cohort_id, start_hp=1, **kwargs):
     for hp_id in range(start_hp, kwargs["parameters"]["n_hp_searches"] + 1):
 
         # Seed everything at the start of each hp run for reproducibility
-        seed_all(SEED + hp_id)
-        logger.info(f"Seeded RNGs with seed={SEED + hp_id} for hp_id={hp_id}")
+        seed_all(SEED*100 + hp_id)
+        logger.info(f"Seeded RNGs with {SEED*100 + hp_id} for SEED={SEED} and hp_id={hp_id}")
 
         # Get hyperparameters
         hp = sample_hyperparameters(kwargs, cohort_id, hp_id)
