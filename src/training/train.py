@@ -24,7 +24,11 @@ from src.training.evaluate import evaluate_model
 
 
 def get_rng_states():
-    """Capture all RNG states for reproducibility."""
+    """Capture all RNG states for reproducibility.
+    Returns:
+        dict: RNG states for python, numpy, torch, and torch.cuda (if available)
+    """
+
     states = {
         "python": random.getstate(),
         "numpy": np.random.get_state(),
@@ -35,21 +39,35 @@ def get_rng_states():
     return states
 
 
-def set_rng_states(states):
-    """Restore all RNG states from checkpoint."""
-    random.setstate(states["python"])
-    np.random.set_state(states["numpy"])
-    # Ensure torch RNG state is on CPU as required by set_rng_state
-    torch_state = states["torch"]
-    if torch_state.device.type != "cpu":
-        torch_state = torch_state.cpu()
-    torch.set_rng_state(torch_state)
-    if torch.cuda.is_available() and "cuda" in states:
-        # CUDA RNG states should already be on correct devices, but ensure they're proper tensors
-        cuda_states = states["cuda"]
-        # Handle case where states might have been moved to wrong device
-        cuda_states = [s.cpu() if s.device.type != "cpu" else s for s in cuda_states]
-        torch.cuda.set_rng_state_all(cuda_states)
+def set_rng_states(states=None):
+    """Restore all RNG states from checkpoint. If states is None, seed all RNGs with SEED.
+    Args:
+        states (dict): RNG states for python, numpy, torch, and torch.cuda (optional)
+    """
+    if states is None:
+        torch.manual_seed(SEED)
+        random.seed(SEED)
+        np.random.seed(SEED)
+
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(SEED)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+
+    elif isinstance(states, dict):
+        random.setstate(states["python"])
+        np.random.set_state(states["numpy"])
+        # Ensure torch RNG state is on CPU as required by set_rng_state
+        torch_state = states["torch"]
+        if torch_state.device.type != "cpu":
+            torch_state = torch_state.cpu()
+        torch.set_rng_state(torch_state)
+        if torch.cuda.is_available() and "cuda" in states:
+            # CUDA RNG states should already be on correct devices, but ensure they're proper tensors
+            cuda_states = states["cuda"]
+            # Handle case where states might have been moved to wrong device
+            cuda_states = [s.cpu() if s.device.type != "cpu" else s for s in cuda_states]
+            torch.cuda.set_rng_state_all(cuda_states)
 
 
 def find_latest_checkpoint(save_dir, cohort_id):
@@ -101,7 +119,8 @@ def sample_hyperparameters(kwargs, cohort_id, hp_id):
 
     Args:
         kwargs (dict): loaded YAML config
-        rng (np.random.Generator or None): optional RNG for reproducibility
+        cohort_id (int): cohort ID for saving
+        hp_id (int): hyperparameter set ID for saving
 
     Returns:
         dict: sampled hyperparameters
@@ -166,7 +185,7 @@ def train_model(
     start_epoch=1,
     best_val_loss_init=float("inf"),
     epochs_no_improve_init=0,
-    best_weights_init=None,  # NEW parameter
+    best_weights_init=None,
     **kwargs,
 ):
     """
@@ -188,7 +207,7 @@ def train_model(
         start_epoch: epoch to resume from (default: 1)
         best_val_loss_init: initial best validation loss for resuming (default: inf)
         epochs_no_improve_init: initial epochs without improvement for resuming (default: 0)
-
+        best_weights_init: initial best model weights for resuming (default: None)
     Returns:
         model: trained model (with best weights loaded)
         history: dict with losses and accuracies
@@ -340,7 +359,7 @@ def train_model(
                 if param.grad is not None:
                     writer.add_histogram(f"Grads/{name}", param.grad, epoch)
 
-        # Early stopping logic
+        # Early stopping
         if use_val:
             improved = epoch_val_loss < best_val_loss
             if improved:
@@ -371,8 +390,8 @@ def train_model(
             "best_val_loss": best_val_loss,
             "epochs_no_improve": epochs_no_improve,
             "history": history,
-            "rng_states": get_rng_states(),  # Capture AFTER epoch completes
-            "best_weights": best_weights,  # Also save best weights
+            "rng_states": get_rng_states(),
+            "best_weights": best_weights,
         }
         torch.save(checkpoint, save_dir / f"{save_prefix}_epoch_{epoch}.pt")
 
@@ -386,7 +405,13 @@ def train_model(
 
 
 def compute_class_weights(train_ds):
-    # Works with both Subset and raw dataset
+    """Compute class weights inversely proportional to class frequencies.
+    Args:
+        train_ds: training dataset (Subset or Dataset)
+    Returns:
+        torch.Tensor: class weights
+    """
+
     labels = np.array([train_ds[i][1] for i in range(len(train_ds))])
     class_sample_count = np.array([len(np.where(labels == t)[0]) for t in np.unique(labels)])
     weight = class_sample_count.sum() / class_sample_count
@@ -394,6 +419,13 @@ def compute_class_weights(train_ds):
 
 
 def get_splits(subjects, n_splits=5):
+    """Generate inner splits for cross-validation.
+    Args:
+        subjects (list or np.array): list of subject identifiers
+        n_splits (int): number of splits (default: 5)
+    Returns:
+        list of tuples: each tuple contains (train_subjs, val_subjs, test_subjs)
+    """
 
     # Create inner splits
     # Each inner split will be train*3, val, test
@@ -414,7 +446,13 @@ def get_splits(subjects, n_splits=5):
 
 
 def log_param_stats(model, writer, step):
-    """Logs per-parameter and global parameter norms and update norms."""
+    """Logs per-parameter and global parameter norms and update norms.
+    Args:
+        model: nn.Module
+        writer: SummaryWriter
+        step: current training step
+    """
+
     total_param_norm = 0.0
     total_update_norm = 0.0
 
@@ -450,6 +488,8 @@ def log_param_stats(model, writer, step):
 
 
 def seed_worker(worker_id):
+    """Seed worker for DataLoader to ensure reproducibility."""
+
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
@@ -469,6 +509,16 @@ def get_subject_indices(dataset, subj_list):
 
 
 def build_model_optim_scheduler(model_type, hp, device, dataloaders=None, evaluate=False, **kwargs):
+    """Build model, optimizer, and scheduler based on model type and hyperparameters.
+    Args:
+        model_type (str): type of model to build ("Fusion" or "Baseline")
+        hp (dict): hyperparameters
+        device: torch device
+        dataloaders (dict or None): dataloaders for training (required if not evaluating)
+        evaluate (bool): whether the model is being built for evaluation only
+    Returns:
+        tuple: (model, optimizer, scheduler)
+    """
 
     if model_type == "Fusion":
         model = SEEGFusionModel(
@@ -508,7 +558,16 @@ def build_model_optim_scheduler(model_type, hp, device, dataloaders=None, evalua
 
 
 def create_dataloaders(train_ds, val_ds, batch_size, generator):
-    """Create dataloaders with proper seeding for reproducibility."""
+    """Create dataloaders with proper seeding for reproducibility.
+    Args:
+        train_ds: training dataset (Subset or Dataset)
+        val_ds: validation dataset (Subset or Dataset)
+        batch_size: batch size
+        generator: torch.Generator for seeding
+    Returns:
+        dict: dataloaders with 'train' and 'val' keys
+    """
+
     # Use RandomSampler with generator for reproducible shuffling
     train_sampler = RandomSampler(train_ds, generator=generator)
 
@@ -633,6 +692,7 @@ def main(model_type, cohort_id, resume=False, **kwargs):
                     logger.info("Restored RNG states from checkpoint")
             else:
                 model.load_state_dict(ckpt)
+                set_rng_states()
                 model.to(device)
 
             current_start_epoch = start_epoch
@@ -803,13 +863,5 @@ if __name__ == "__main__":
     config = load_yaml()
 
     SEED = config["parameters"]["random_seed"]
-    torch.manual_seed(SEED)
-    random.seed(SEED)
-    np.random.seed(SEED)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(SEED)
-        # For full determinism (may slow down training)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
 
     main(model_type, cohort_id, resume=resume, **config)
