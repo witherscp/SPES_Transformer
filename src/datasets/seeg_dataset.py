@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 from pathlib import Path
 from loguru import logger
 import numpy as np
@@ -16,7 +16,7 @@ class SEEGDataset(Dataset):
         transform=None,
         embed_dim=128,
         verbose=True,
-        cache_size=5,  # Number of subjects to keep in memory
+        cache_size=50,  # Number of subjects to keep in memory
     ):
         """
         Memory-efficient SEEG dataset with LRU caching.
@@ -109,12 +109,12 @@ class SEEGDataset(Dataset):
             evicted_subj = next(iter(self._cache))
             del self._cache[evicted_subj]
             if self.verbose:
-                logger.debug(f"Evicted {evicted_subj} from cache")
+                logger.info(f"Evicted subject {evicted_subj} from cache.")
 
         return processed
 
     def _process_subject(self, subj, subj_data):
-        """Process a subject's data into ready-to-use samples."""
+        """Process a subject's data - store UNPADDED to save memory."""
         samples = {}
 
         conv_coords_raw = subj_data["convergent"]["stim_trial_coords"]
@@ -128,6 +128,18 @@ class SEEGDataset(Dataset):
         conv_coords[conv_coord_mask] = torch.full((self.embed_dim,), np.nan)
         div_coords[div_coord_mask] = torch.full((self.embed_dim,), np.nan)
 
+        # Store UNPADDED coordinates (save memory, pad lazily)
+        conv_coords = torch.nan_to_num(conv_coords, nan=0).to(torch.float16)
+        div_coords = torch.nan_to_num(div_coords, nan=0).to(torch.float16)
+
+        samples["_shared"] = {
+            "subject": subj,
+            "convergent_coords": conv_coords,  # unpadded
+            "divergent_coords": div_coords,    # unpadded
+            "n_stims": conv_coords.shape[0],
+            "n_responses": div_coords.shape[0],
+        }
+
         n_targets = len(subj_data["targets"])
 
         for t in range(n_targets):
@@ -135,47 +147,25 @@ class SEEGDataset(Dataset):
             x_div = subj_data["divergent"]["data"][t]
             y = subj_data["target_labels"][t]
 
-            # Apply padding
-            x_conv_padded = torch.nn.functional.pad(
-                x_conv,
-                (0, 0, 0, self.max_trials - x_conv.shape[1], 0, self.max_stims - x_conv.shape[0]),
-                value=np.nan,
-            )
-            x_div_padded = torch.nn.functional.pad(
-                x_div,
-                (0, 0, 0, self.max_trials - x_div.shape[1], 0, self.max_responses - x_div.shape[0]),
-                value=np.nan,
-            )
-            conv_coords_padded = torch.nn.functional.pad(
-                conv_coords,
-                (0, 0, 0, self.max_stims - conv_coords.shape[0]),
-                value=0,
-            )
-            div_coords_padded = torch.nn.functional.pad(
-                div_coords,
-                (0, 0, 0, self.max_responses - div_coords.shape[0]),
-                value=0,
-            )
+            # Store original shapes for lazy padding
+            n_stims, n_trials_conv = x_conv.shape[:2]
+            n_resp, n_trials_div = x_div.shape[:2]
 
-            # Create masks
-            conv_mask = torch.isnan(x_conv_padded).all(dim=-1)
-            div_mask = torch.isnan(x_div_padded).all(dim=-1)
+            # Create masks for NaN values in original data only
+            conv_nan_mask = torch.isnan(x_conv).all(dim=-1)
+            div_nan_mask = torch.isnan(x_div).all(dim=-1)
 
-            # Replace nan with zeros
-            x_conv_padded = torch.nan_to_num(x_conv_padded, nan=0)
-            x_div_padded = torch.nan_to_num(x_div_padded, nan=0)
-            conv_coords_padded = torch.nan_to_num(conv_coords_padded, nan=0)
-            div_coords_padded = torch.nan_to_num(div_coords_padded, nan=0)
+            # Store UNPADDED data (much smaller for subjects with fewer channels)
+            x_conv = torch.nan_to_num(x_conv, nan=0).to(torch.float16)
+            x_div = torch.nan_to_num(x_div, nan=0).to(torch.float16)
 
             samples[t] = {
-                "subject": subj,
                 "target_idx": t,
-                "convergent": x_conv_padded,
-                "divergent": x_div_padded,
-                "convergent_coords": conv_coords_padded,
-                "divergent_coords": div_coords_padded,
-                "convergent_mask": conv_mask,
-                "divergent_mask": div_mask,
+                "convergent": x_conv,       # unpadded
+                "divergent": x_div,         # unpadded
+                "conv_nan_mask": conv_nan_mask,
+                "div_nan_mask": div_nan_mask,
+                "n_trials": n_trials_conv,
                 "label": y,
             }
 
@@ -187,21 +177,56 @@ class SEEGDataset(Dataset):
     def __getitem__(self, idx):
         subj, target_idx = self.sample_index[idx]
 
-        # Get from cache (loads if needed)
         subj_samples = self._load_subject(subj)
         sample = subj_samples[target_idx]
+        shared = subj_samples["_shared"]
+
+        # Lazy padding at access time
+        x_conv = sample["convergent"]
+        x_div = sample["divergent"]
+        conv_coords = shared["convergent_coords"]
+        div_coords = shared["divergent_coords"]
+
+        # Pad data tensors
+        x_conv_padded = torch.nn.functional.pad(
+            x_conv,
+            (0, 0, 0, self.max_trials - x_conv.shape[1], 0, self.max_stims - x_conv.shape[0]),
+            value=0,
+        )
+        x_div_padded = torch.nn.functional.pad(
+            x_div,
+            (0, 0, 0, self.max_trials - x_div.shape[1], 0, self.max_responses - x_div.shape[0]),
+            value=0,
+        )
+
+        # Pad coordinates
+        conv_coords_padded = torch.nn.functional.pad(
+            conv_coords, (0, 0, 0, self.max_stims - conv_coords.shape[0]), value=0
+        )
+        div_coords_padded = torch.nn.functional.pad(
+            div_coords, (0, 0, 0, self.max_responses - div_coords.shape[0]), value=0
+        )
+
+        # Build masks (padded regions + original NaN positions)
+        conv_mask = torch.ones(self.max_stims, self.max_trials, dtype=torch.bool)
+        div_mask = torch.ones(self.max_responses, self.max_trials, dtype=torch.bool)
+        
+        n_s, n_t = x_conv.shape[:2]
+        n_r = x_div.shape[0]
+        
+        conv_mask[:n_s, :n_t] = sample["conv_nan_mask"]
+        div_mask[:n_r, :n_t] = sample["div_nan_mask"]
 
         x = {
-            "convergent": sample["convergent"],
-            "divergent": sample["divergent"],
-            "convergent_mask": sample["convergent_mask"],
-            "divergent_mask": sample["divergent_mask"],
-            "convergent_coords": sample["convergent_coords"],
-            "divergent_coords": sample["divergent_coords"],
+            "convergent": x_conv_padded.float(),
+            "divergent": x_div_padded.float(),
+            "convergent_mask": conv_mask,
+            "divergent_mask": div_mask,
+            "convergent_coords": conv_coords_padded.float(),
+            "divergent_coords": div_coords_padded.float(),
         }
-        y = sample["label"]
 
-        return x, y
+        return x, sample["label"]
 
     # For compatibility with get_subject_indices and compute_class_weights
     @property
