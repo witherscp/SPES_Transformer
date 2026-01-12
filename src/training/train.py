@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 import torch.optim as optim
 
@@ -54,38 +54,43 @@ def set_rng_states(states):
 
 def find_latest_checkpoint(save_dir, cohort_id):
     """Find the latest checkpoint and hyperparameter set to resume from.
-    
+
     Args:
         save_dir: Path to experiment directory
         cohort_id: Cohort ID being trained
-        
+
     Returns:
         tuple: (hp_id, epoch, checkpoint_path) or (None, None, None) if no checkpoint found
     """
     save_dir = Path(save_dir)
     if not save_dir.exists():
         return None, None, None
-    
+
     # Find all checkpoint files matching pattern cohort{id}_hp{hp_id}_epoch_{epoch}.pt
     import re
+
     pattern = re.compile(rf"cohort{cohort_id}_hp(\d+)_epoch_(\d+)\.pt")
-    
+
     latest_hp_id = None
     latest_epoch = 0
     latest_checkpoint = None
-    
+
     for ckpt_file in save_dir.glob(f"cohort{cohort_id}_hp*_epoch_*.pt"):
         match = pattern.match(ckpt_file.name)
         if match:
             hp_id = int(match.group(1))
             epoch = int(match.group(2))
-            
+
             # Prefer higher hp_id, then higher epoch
-            if latest_hp_id is None or hp_id > latest_hp_id or (hp_id == latest_hp_id and epoch > latest_epoch):
+            if (
+                latest_hp_id is None
+                or hp_id > latest_hp_id
+                or (hp_id == latest_hp_id and epoch > latest_epoch)
+            ):
                 latest_hp_id = hp_id
                 latest_epoch = epoch
                 latest_checkpoint = ckpt_file
-    
+
     return latest_hp_id, latest_epoch, latest_checkpoint
 
 
@@ -161,6 +166,7 @@ def train_model(
     start_epoch=1,
     best_val_loss_init=float("inf"),
     epochs_no_improve_init=0,
+    best_weights_init=None,  # NEW parameter
     **kwargs,
 ):
     """
@@ -200,12 +206,14 @@ def train_model(
     best_val_loss = best_val_loss_init
     best_epoch = start_epoch - 1 if start_epoch > 1 else 0
     epochs_no_improve = epochs_no_improve_init
-    best_weights = None
+    best_weights = best_weights_init  # Use restored weights
     early_stop = False
 
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
 
-    logger.info(f"\nStarting training for {n_epochs} epochs on device: {device} (resuming from epoch {start_epoch})")
+    logger.info(
+        f"\nStarting training for {n_epochs} epochs on device: {device} (resuming from epoch {start_epoch})"
+    )
 
     for epoch in range(start_epoch, n_epochs + 1):
         epoch_start = time.time()
@@ -363,7 +371,8 @@ def train_model(
             "best_val_loss": best_val_loss,
             "epochs_no_improve": epochs_no_improve,
             "history": history,
-            "rng_states": get_rng_states(),
+            "rng_states": get_rng_states(),  # Capture AFTER epoch completes
+            "best_weights": best_weights,  # Also save best weights
         }
         torch.save(checkpoint, save_dir / f"{save_prefix}_epoch_{epoch}.pt")
 
@@ -500,14 +509,16 @@ def build_model_optim_scheduler(model_type, hp, device, dataloaders=None, evalua
 
 def create_dataloaders(train_ds, val_ds, batch_size, generator):
     """Create dataloaders with proper seeding for reproducibility."""
+    # Use RandomSampler with generator for reproducible shuffling
+    train_sampler = RandomSampler(train_ds, generator=generator)
+
     return {
         "train": DataLoader(
             train_ds,
             batch_size=batch_size,
-            shuffle=True,
-            num_workers=0,  # Use 0 workers for perfect reproducibility
+            sampler=train_sampler,  # Use sampler instead of shuffle
+            num_workers=0,
             pin_memory=False,
-            generator=generator,
             worker_init_fn=seed_worker,
         ),
         "val": DataLoader(
@@ -539,11 +550,13 @@ def main(model_type, cohort_id, resume=False, **kwargs):
     start_hp_id = 1
     start_epoch = 1
     resume_checkpoint = None
-    
+
     if resume:
         resume_hp_id, resume_epoch, resume_checkpoint = find_latest_checkpoint(save_dir, cohort_id)
         if resume_checkpoint is not None:
-            logger.info(f"Found checkpoint: hp{resume_hp_id}, epoch {resume_epoch} at {resume_checkpoint}")
+            logger.info(
+                f"Found checkpoint: hp{resume_hp_id}, epoch {resume_epoch} at {resume_checkpoint}"
+            )
             start_hp_id = resume_hp_id
             start_epoch = resume_epoch + 1  # Resume from next epoch
         else:
@@ -573,9 +586,7 @@ def main(model_type, cohort_id, resume=False, **kwargs):
         g = torch.Generator()
         g.manual_seed(SEED + hp_id)
 
-        dataloaders = create_dataloaders(
-            train_ds, val_ds, kwargs["parameters"]["batch_size"], g
-        )
+        dataloaders = create_dataloaders(train_ds, val_ds, kwargs["parameters"]["batch_size"], g)
 
         model, optimizer, scheduler = build_model_optim_scheduler(
             model_type, hp, device, dataloaders, **kwargs
@@ -585,33 +596,37 @@ def main(model_type, cohort_id, resume=False, **kwargs):
         current_start_epoch = 1
         best_val_loss_init = float("inf")
         epochs_no_improve_init = 0
-        
+
         if resume and hp_id == start_hp_id and resume_checkpoint is not None:
             logger.info(f"Resuming from checkpoint: {resume_checkpoint}")
-            # Load to CPU first to avoid RNG state device issues
             ckpt = torch.load(resume_checkpoint, map_location="cpu", weights_only=False)
-            
+
             if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
                 model.load_state_dict(ckpt["model_state_dict"])
                 model.to(device)
-                
+
                 if "optimizer_state_dict" in ckpt:
                     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-                    # Move optimizer state to correct device
                     for state in optimizer.state.values():
                         for k, v in state.items():
                             if isinstance(v, torch.Tensor):
                                 state[k] = v.to(device)
-                
+
                 if "scheduler_state_dict" in ckpt and ckpt["scheduler_state_dict"] is not None:
                     scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-                
+
                 if "best_val_loss" in ckpt:
                     best_val_loss_init = ckpt["best_val_loss"]
-                
+
                 if "epochs_no_improve" in ckpt:
                     epochs_no_improve_init = ckpt["epochs_no_improve"]
-                
+
+                # NEW: Restore best_weights if available
+                if "best_weights" in ckpt and ckpt["best_weights"] is not None:
+                    best_weights_restored = ckpt["best_weights"]
+                else:
+                    best_weights_restored = None
+
                 # Restore RNG states for reproducibility
                 if "rng_states" in ckpt:
                     set_rng_states(ckpt["rng_states"])
@@ -619,7 +634,7 @@ def main(model_type, cohort_id, resume=False, **kwargs):
             else:
                 model.load_state_dict(ckpt)
                 model.to(device)
-            
+
             current_start_epoch = start_epoch
             logger.info(
                 f"Resumed model, optimizer, scheduler. "
@@ -627,7 +642,7 @@ def main(model_type, cohort_id, resume=False, **kwargs):
                 f"epochs_no_improve={epochs_no_improve_init}, "
                 f"best_val_loss={best_val_loss_init:.4f}"
             )
-            
+
             # Reset resume for subsequent hp_ids
             resume_checkpoint = None
 
@@ -649,10 +664,17 @@ def main(model_type, cohort_id, resume=False, **kwargs):
             start_epoch=current_start_epoch,
             best_val_loss_init=best_val_loss_init,
             epochs_no_improve_init=epochs_no_improve_init,
+            best_weights_init=(
+                best_weights_restored if resume and hp_id == start_hp_id else None
+            ),  # NEW
             **kwargs,
         )
 
-        val_loss = history["val_loss"][best_epoch - current_start_epoch] if history["val_loss"] else float("inf")
+        val_loss = (
+            history["val_loss"][best_epoch - current_start_epoch]
+            if history["val_loss"]
+            else float("inf")
+        )
 
         results.append(
             {
