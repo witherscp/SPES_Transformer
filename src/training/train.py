@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Subset, Sampler
+from torch.utils.data import DataLoader, Subset
 from torch.utils.tensorboard import SummaryWriter
 import torch.optim as optim
 
@@ -23,124 +23,18 @@ from src.models.model import SEEGFusionModel, BaselineModel
 from src.training.evaluate import evaluate_model
 
 
-class EpochSeededRandomSampler(Sampler):
-    """A sampler that generates a reproducible random permutation based on epoch and seed.
-
-    Unlike RandomSampler, this sampler's permutation is fully determined by
-    (seed, hp_id, epoch), making it reproducible across resume.
-    """
-
-    def __init__(self, data_source, seed, hp_id, epoch=1):
-        self.data_source = data_source
-        self.seed = seed
-        self.hp_id = hp_id
-        self.epoch = epoch
-
-    def set_epoch(self, epoch):
-        """Set the current epoch (call this before each epoch)."""
-        self.epoch = epoch
-
-    def __iter__(self):
-        # Create a deterministic permutation based on seed + hp_id + epoch
-        g = torch.Generator()
-        g.manual_seed(self.seed + self.hp_id * 1000 + self.epoch)
-        indices = torch.randperm(len(self.data_source), generator=g).tolist()
-        return iter(indices)
-
-    def __len__(self):
-        return len(self.data_source)
-
-
-def get_rng_states():
-    """Capture all RNG states for reproducibility.
-    Returns:
-        dict: RNG states for python, numpy, torch, and torch.cuda (if available)
-    """
-
-    states = {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
-        "torch": torch.get_rng_state(),
-    }
-    if torch.cuda.is_available():
-        states["cuda"] = torch.cuda.get_rng_state_all()
-    return states
-
-
-def set_rng_states(states=None):
-    """Restore all RNG states from checkpoint. If states is None, seed all RNGs with SEED.
+def seed_all(seed):
+    """Seed all RNGs for reproducibility at the start of each hp run.
     Args:
-        states (dict): RNG states for python, numpy, torch, and torch.cuda (optional)
+        seed: random seed value
     """
-    # Always set deterministic CUDA behavior
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-
-    if states is None:
-        torch.manual_seed(SEED)
-        random.seed(SEED)
-        np.random.seed(SEED)
-
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(SEED)
-
-    elif isinstance(states, dict):
-        random.setstate(states["python"])
-        np.random.set_state(states["numpy"])
-        # Ensure torch RNG state is on CPU as required by set_rng_state
-        torch_state = states["torch"]
-        if torch_state.device.type != "cpu":
-            torch_state = torch_state.cpu()
-        torch.set_rng_state(torch_state)
-        if torch.cuda.is_available() and "cuda" in states:
-            # CUDA RNG states should already be on correct devices, but ensure they're proper tensors
-            cuda_states = states["cuda"]
-            # Handle case where states might have been moved to wrong device
-            cuda_states = [s.cpu() if s.device.type != "cpu" else s for s in cuda_states]
-            torch.cuda.set_rng_state_all(cuda_states)
-
-
-def find_latest_checkpoint(save_dir, cohort_id):
-    """Find the latest checkpoint and hyperparameter set to resume from.
-
-    Args:
-        save_dir: Path to experiment directory
-        cohort_id: Cohort ID being trained
-
-    Returns:
-        tuple: (hp_id, epoch, checkpoint_path) or (None, None, None) if no checkpoint found
-    """
-    save_dir = Path(save_dir)
-    if not save_dir.exists():
-        return None, None, None
-
-    # Find all checkpoint files matching pattern cohort{id}_hp{hp_id}_epoch_{epoch}.pt
-    import re
-
-    pattern = re.compile(rf"cohort{cohort_id}_hp(\d+)_epoch_(\d+)\.pt")
-
-    latest_hp_id = None
-    latest_epoch = 0
-    latest_checkpoint = None
-
-    for ckpt_file in save_dir.glob(f"cohort{cohort_id}_hp*_epoch_*.pt"):
-        match = pattern.match(ckpt_file.name)
-        if match:
-            hp_id = int(match.group(1))
-            epoch = int(match.group(2))
-
-            # Prefer higher hp_id, then higher epoch
-            if (
-                latest_hp_id is None
-                or hp_id > latest_hp_id
-                or (hp_id == latest_hp_id and epoch > latest_epoch)
-            ):
-                latest_hp_id = hp_id
-                latest_epoch = epoch
-                latest_checkpoint = ckpt_file
-
-    return latest_hp_id, latest_epoch, latest_checkpoint
 
 
 def sample_hyperparameters(kwargs, cohort_id, hp_id):
@@ -213,14 +107,10 @@ def train_model(
     patience=5,
     use_val=True,
     use_tensorboard=False,
-    start_epoch=1,
-    best_val_loss_init=float("inf"),
-    epochs_no_improve_init=0,
-    best_weights_init=None,
     **kwargs,
 ):
     """
-    Train a model with early stopping and per-epoch checkpoint saving.
+    Train a model with early stopping.
     Args:
         model: nn.Module
         dataloaders: dict with 'train' and 'val' DataLoaders
@@ -235,10 +125,6 @@ def train_model(
         patience: early stopping patience (# consecutive epochs without improvement) (default: 5)
         use_val: whether to use validation set for early stopping (default: True)
         use_tensorboard: whether to log to TensorBoard (default: False)
-        start_epoch: epoch to resume from (default: 1)
-        best_val_loss_init: initial best validation loss for resuming (default: inf)
-        epochs_no_improve_init: initial epochs without improvement for resuming (default: 0)
-        best_weights_init: initial best model weights for resuming (default: None)
     Returns:
         model: trained model (with best weights loaded)
         history: dict with losses and accuracies
@@ -253,24 +139,19 @@ def train_model(
         tb_run_name = f"{save_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         writer = SummaryWriter(log_dir=f"{kwargs['paths']['tb_logs_path']}/{tb_run_name}")
 
-    best_val_loss = best_val_loss_init
-    best_epoch = start_epoch - 1 if start_epoch > 1 else 0
-    epochs_no_improve = epochs_no_improve_init
-    best_weights = best_weights_init  # Use restored weights
+    best_val_loss = float("inf")
+    best_epoch = 0
+    epochs_no_improve = 0
+    best_weights = None
     early_stop = False
 
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
 
-    logger.info(
-        f"\nStarting training for {n_epochs} epochs on device: {device} (resuming from epoch {start_epoch})"
-    )
+    logger.info(f"\nStarting training for {n_epochs} epochs on device: {device}")
 
-    for epoch in range(start_epoch, n_epochs + 1):
+    for epoch in range(1, n_epochs + 1):
         epoch_start = time.time()
         model.train()
-
-        # Set epoch for reproducible shuffling
-        dataloaders["train"].sampler.set_epoch(epoch)
 
         train_loss = 0.0
         train_correct = 0
@@ -414,20 +295,6 @@ def train_model(
         else:
             # assume most recent epoch is best
             best_epoch = epoch
-
-        # Save checkpoint for every epoch (with full state for resumption)
-        checkpoint = {
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
-            "epoch": epoch,
-            "best_val_loss": best_val_loss,
-            "epochs_no_improve": epochs_no_improve,
-            "history": history,
-            "rng_states": get_rng_states(),
-            "best_weights": best_weights,
-        }
-        torch.save(checkpoint, save_dir / f"{save_prefix}_epoch_{epoch}.pt")
 
         if early_stop:
             break
@@ -591,26 +458,20 @@ def build_model_optim_scheduler(model_type, hp, device, dataloaders=None, evalua
     return model, optimizer, scheduler
 
 
-def create_dataloaders(train_ds, val_ds, batch_size, seed, hp_id):
-    """Create dataloaders with epoch-seeded sampler for reproducibility.
+def create_dataloaders(train_ds, val_ds, batch_size):
+    """Create dataloaders for training and validation.
     Args:
         train_ds: training dataset (Subset or Dataset)
         val_ds: validation dataset (Subset or Dataset)
         batch_size: batch size
-        seed: random seed
-        hp_id: hyperparameter ID
     Returns:
         dict: dataloaders with 'train' and 'val' keys
     """
-
-    # Use EpochSeededRandomSampler for reproducible shuffling
-    train_sampler = EpochSeededRandomSampler(train_ds, seed=seed, hp_id=hp_id, epoch=1)
-
     return {
         "train": DataLoader(
             train_ds,
             batch_size=batch_size,
-            sampler=train_sampler,
+            shuffle=True,
             num_workers=0,
             pin_memory=False,
             worker_init_fn=seed_worker,
@@ -625,7 +486,7 @@ def create_dataloaders(train_ds, val_ds, batch_size, seed, hp_id):
     }
 
 
-def main(model_type, cohort_id, resume=False, **kwargs):
+def main(model_type, cohort_id, start_hp=1, **kwargs):
 
     logger.info(f"Using cohort split {cohort_id}")
 
@@ -639,30 +500,17 @@ def main(model_type, cohort_id, resume=False, **kwargs):
     logger.info(f"Val subjects: {val_subjs}")
     logger.info(f"Test subjects: {test_subjs}")
 
-    # ---- Check for resume ----
-    save_dir = Path(f"../../experiments/seed{SEED}/cohort{cohort_id}")
-    start_hp_id = 1
-    start_epoch = 1
-    resume_checkpoint = None
-
-    if resume:
-        resume_hp_id, resume_epoch, resume_checkpoint = find_latest_checkpoint(save_dir, cohort_id)
-        if resume_checkpoint is not None:
-            logger.info(
-                f"Found checkpoint: hp{resume_hp_id}, epoch {resume_epoch} at {resume_checkpoint}"
-            )
-            start_hp_id = resume_hp_id
-            start_epoch = resume_epoch + 1  # Resume from next epoch
-        else:
-            logger.warning("Resume requested but no checkpoint found. Starting from scratch.")
-
     # ---- Hyperparameter sweep ----
     best_val_loss = float("inf")
     best_state = None
     best_config = None
     results = []
 
-    for hp_id in range(start_hp_id, kwargs["parameters"]["n_hp_searches"] + 1):
+    for hp_id in range(start_hp, kwargs["parameters"]["n_hp_searches"] + 1):
+
+        # Seed everything at the start of each hp run for reproducibility
+        seed_all(SEED + hp_id)
+        logger.info(f"Seeded RNGs with seed={SEED + hp_id} for hp_id={hp_id}")
 
         # Get hyperparameters
         hp = sample_hyperparameters(kwargs, cohort_id, hp_id)
@@ -676,75 +524,12 @@ def main(model_type, cohort_id, resume=False, **kwargs):
         train_ds = Subset(full_dataset, get_subject_indices(full_dataset, train_subjs))
         val_ds = Subset(full_dataset, get_subject_indices(full_dataset, val_subjs))
 
-        # ---- Resume: Load checkpoint and restore RNG states ----
-        current_start_epoch = 1
-        best_val_loss_init = float("inf")
-        epochs_no_improve_init = 0
-        best_weights_restored = None
-        ckpt = None
-
-        if resume and hp_id == start_hp_id and resume_checkpoint is not None:
-            logger.info(f"Resuming from checkpoint: {resume_checkpoint}")
-            ckpt = torch.load(resume_checkpoint, map_location="cpu", weights_only=False)
-
-            # Restore RNG states
-            if isinstance(ckpt, dict) and "rng_states" in ckpt:
-                set_rng_states(ckpt["rng_states"])
-                logger.info("Restored RNG states from checkpoint")
-            else:
-                set_rng_states()
-
-            current_start_epoch = start_epoch
-        else:
-            # Fresh start: seed RNG deterministically
-            set_rng_states()
-
-        # Create dataloaders with epoch-seeded sampler (shuffle is deterministic per epoch)
-        dataloaders = create_dataloaders(
-            train_ds, val_ds, kwargs["parameters"]["batch_size"], SEED, hp_id
-        )
+        # Create dataloaders
+        dataloaders = create_dataloaders(train_ds, val_ds, kwargs["parameters"]["batch_size"])
 
         model, optimizer, scheduler = build_model_optim_scheduler(
             model_type, hp, device, dataloaders, **kwargs
         )
-
-        # ---- Load model/optimizer/scheduler state ----
-        if ckpt is not None:
-            if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-                model.load_state_dict(ckpt["model_state_dict"])
-                model.to(device)
-
-                if "optimizer_state_dict" in ckpt:
-                    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-                    for state in optimizer.state.values():
-                        for k, v in state.items():
-                            if isinstance(v, torch.Tensor):
-                                state[k] = v.to(device)
-
-                if "scheduler_state_dict" in ckpt and ckpt["scheduler_state_dict"] is not None:
-                    scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-
-                if "best_val_loss" in ckpt:
-                    best_val_loss_init = ckpt["best_val_loss"]
-
-                if "epochs_no_improve" in ckpt:
-                    epochs_no_improve_init = ckpt["epochs_no_improve"]
-
-                if "best_weights" in ckpt and ckpt["best_weights"] is not None:
-                    best_weights_restored = ckpt["best_weights"]
-            else:
-                model.load_state_dict(ckpt)
-                model.to(device)
-
-            logger.info(
-                f"Resumed model, optimizer, scheduler. "
-                f"Starting from epoch {current_start_epoch}, "
-                f"epochs_no_improve={epochs_no_improve_init}, "
-                f"best_val_loss={best_val_loss_init:.4f}"
-            )
-
-            # Reset resume for subsequent hp_ids
-            resume_checkpoint = None
 
         criterion = nn.CrossEntropyLoss(weight=compute_class_weights(train_ds).to(device))
 
@@ -761,18 +546,10 @@ def main(model_type, cohort_id, resume=False, **kwargs):
             patience=kwargs["parameters"]["patience"],
             use_val=True,
             cohort_id=cohort_id,
-            start_epoch=current_start_epoch,
-            best_val_loss_init=best_val_loss_init,
-            epochs_no_improve_init=epochs_no_improve_init,
-            best_weights_init=best_weights_restored,
             **kwargs,
         )
 
-        val_loss = (
-            history["val_loss"][best_epoch - current_start_epoch]
-            if history["val_loss"]
-            else float("inf")
-        )
+        val_loss = history["val_loss"][best_epoch - 1] if history["val_loss"] else float("inf")
 
         results.append(
             {
@@ -869,17 +646,17 @@ if __name__ == "__main__":
         help="Cohort split ID (1-5)",
     )
     parser.add_argument(
-        "-r",
-        "--resume",
-        action="store_true",
-        help="Resume training from latest checkpoint",
+        "--hp",
+        type=int,
+        default=1,
+        help="Hyperparameter set ID to start from (default: 1). Use this to resume from a specific HP set.",
     )
 
     args = parser.parse_args()
     model_type = args.model
     logdir = args.logdir
     cohort_id = args.cohort
-    resume = args.resume
+    start_hp = args.hp
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -902,4 +679,4 @@ if __name__ == "__main__":
 
     SEED = config["parameters"]["random_seed"]
 
-    main(model_type, cohort_id, resume=resume, **config)
+    main(model_type, cohort_id, start_hp=start_hp, **config)
