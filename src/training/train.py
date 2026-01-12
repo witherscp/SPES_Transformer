@@ -265,7 +265,7 @@ def train_model(
                 best_val_loss = epoch_val_loss
                 best_epoch = epoch
                 best_weights = model.state_dict()
-                torch.save(best_weights, save_dir / f"{save_prefix}_best_model.pt")     
+                torch.save(best_weights, save_dir / f"{save_prefix}_best_model.pt")
             else:
                 epochs_no_improve += 1
                 if epochs_no_improve > patience:
@@ -285,7 +285,8 @@ def train_model(
 
 
 def compute_class_weights(train_ds):
-    labels = np.array([v[1] for v in train_ds])
+    # Works with both Subset and raw dataset
+    labels = np.array([train_ds[i][1] for i in range(len(train_ds))])
     class_sample_count = np.array([len(np.where(labels == t)[0]) for t in np.unique(labels)])
     weight = class_sample_count.sum() / class_sample_count
     return torch.from_numpy(weight).float()
@@ -410,7 +411,7 @@ def main(model_type, cohort_id, **kwargs):
     logger.info(f"Using cohort split {cohort_id}")
 
     # ---- Resolve subjects per split ----
-    subjects = np.loadtxt("../../data/subjects.txt", dtype=str)
+    subjects = np.loadtxt("../../data/test_subjs.txt", dtype=str)
     shuffled_subjects = np.random.RandomState(SEED).permutation(subjects)
     splits = get_splits(shuffled_subjects, n_splits=kwargs["parameters"]["n_folds"])
     train_subjs, val_subjs, test_subjs = splits[cohort_id - 1]
@@ -425,7 +426,7 @@ def main(model_type, cohort_id, **kwargs):
     best_config = None
     results = []
 
-    for hp_id in range(1,kwargs['parameters']['n_hp_searches']+1):
+    for hp_id in range(1, kwargs["parameters"]["n_hp_searches"] + 1):
 
         # Get hyperparameters
         hp = sample_hyperparameters(kwargs, cohort_id, hp_id)
@@ -441,9 +442,19 @@ def main(model_type, cohort_id, **kwargs):
 
         dataloaders = {
             "train": DataLoader(
-                train_ds, batch_size=kwargs["parameters"]["batch_size"], shuffle=True
+                train_ds,
+                batch_size=kwargs["parameters"]["batch_size"],
+                shuffle=True,
+                num_workers=2,
+                pin_memory=False,
             ),
-            "val": DataLoader(val_ds, batch_size=kwargs["parameters"]["batch_size"], shuffle=False),
+            "val": DataLoader(
+                val_ds,
+                batch_size=kwargs["parameters"]["batch_size"],
+                shuffle=False,
+                num_workers=2,
+                pin_memory=False,
+            ),
         }
 
         model, optimizer, scheduler = build_model_optim_scheduler(
@@ -460,9 +471,9 @@ def main(model_type, cohort_id, **kwargs):
             scheduler=scheduler,
             device=device,
             save_prefix=f"cohort{cohort_id}_hp{hp_id}",
-            n_epochs=kwargs['parameters']['n_epochs'],
-            n_steps_per_update=kwargs['parameters']['n_steps_per_update'],
-            patience=kwargs['parameters']['patience'],
+            n_epochs=kwargs["parameters"]["n_epochs"],
+            n_steps_per_update=kwargs["parameters"]["n_steps_per_update"],
+            patience=kwargs["parameters"]["patience"],
             use_val=True,
             cohort_id=cohort_id,
             **kwargs,
@@ -496,7 +507,9 @@ def main(model_type, cohort_id, **kwargs):
     results_df = pd.DataFrame(results)
     outdir = Path(f"../../results/seed{SEED}")
     outdir.mkdir(exist_ok=True, parents=True)
-    results_df.to_csv(outdir / f"{model_type}_seed{SEED}_cohort{cohort_id}_hp_search_results.csv", index=False)
+    results_df.to_csv(
+        outdir / f"{model_type}_seed{SEED}_cohort{cohort_id}_hp_search_results.csv", index=False
+    )
 
     # ---- Test on best model ----
     logger.success(f"Best hyperparameters: {best_config}")
@@ -504,7 +517,7 @@ def main(model_type, cohort_id, **kwargs):
     save_dir.mkdir(exist_ok=True, parents=True)
     with open(save_dir / f"cohort{cohort_id}_hp_best_overall.json", "w") as f:
         json.dump(best_config, f, indent=2)
-    
+
     logger.info("Testing on best model from hyperparameter search.")
 
     model, _, _ = build_model_optim_scheduler(model_type, best_config, device, evaluate=True)
@@ -512,21 +525,23 @@ def main(model_type, cohort_id, **kwargs):
     model.load_state_dict(best_state)
     model.float()  # Convert to float32 for evaluation to avoid bfloat16/float32 type mismatch
 
-    torch.save(model.state_dict(), save_dir / f"cohort{cohort_id}_best_overall_model.pt")   
+    torch.save(model.state_dict(), save_dir / f"cohort{cohort_id}_best_overall_model.pt")
 
     all_metrics = []
     for subj in test_subjs:
         logger.info(f"Evaluating subject {subj}:")
         test_dataset = SEEGDataset(subjects=[subj], embed_dim=best_config["embed_dim"])
         metrics = evaluate_model(
-            model, DataLoader(test_dataset, batch_size=kwargs['parameters']['batch_size'], shuffle=False), device
+            model,
+            DataLoader(test_dataset, batch_size=kwargs["parameters"]["batch_size"], shuffle=False),
+            device,
         )
         metrics.update(best_config)
         metrics["subj"] = subj
         del test_dataset
         all_metrics.append(metrics)
 
-    first_column=["subj"]
+    first_column = ["subj"]
     all_columns = first_column + [k for k in all_metrics[0].keys() if k != "subj"]
     df = pd.DataFrame(all_metrics, columns=all_columns)
     df.to_csv(outdir / f"{model_type}_seed{SEED}_cohort{cohort_id}_test_results.csv", index=False)

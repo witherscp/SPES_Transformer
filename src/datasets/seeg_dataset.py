@@ -5,6 +5,7 @@ from loguru import logger
 import numpy as np
 import math
 import torch.nn as nn
+from collections import OrderedDict
 
 
 class SEEGDataset(Dataset):
@@ -15,177 +16,180 @@ class SEEGDataset(Dataset):
         transform=None,
         embed_dim=128,
         verbose=True,
+        cache_size=5,  # Number of subjects to keep in memory
     ):
         """
+        Memory-efficient SEEG dataset with LRU caching.
+
         Args:
             subjects (list[str], optional): List of subject IDs to include (without .pt extension).
-                                             If None, all .pt files in directory are loaded.
             data_dir (str): Path to directory containing .pt files.
             transform (callable, optional): Optional transform to apply to each x.
+            embed_dim (int): Embedding dimension for positional encoding.
+            verbose (bool): Whether to log loading info.
+            cache_size (int): Number of subjects to keep in memory (LRU cache).
         """
-
-        self.data = []
         self.transform = transform
         self.embed_dim = embed_dim
         self.pos_encoder = FourierPositionalEncoding(out_dim=embed_dim)
-        data_dir = Path(data_dir)
+        self.data_dir = Path(data_dir)
+        self.verbose = verbose
+        self.cache_size = cache_size
+
+        # LRU cache for loaded subject data
+        self._cache = OrderedDict()
 
         # If no subject list provided, include all .pt files
         if subjects is None:
-            subjects = [f.stem for f in data_dir.glob("*.pt")]
+            subjects = [f.stem for f in self.data_dir.glob("*.pt")]
 
-        self.subjects = subjects
+        self.subjects = list(subjects)
 
-        max_stims, max_responses, max_trials = 0, 0, 0
-        for subj in subjects:
-            path = data_dir / f"{subj}.pt"
+        # Build metadata index: list of (subject, target_idx) tuples
+        # Also collect max dimensions for padding
+        self.sample_index = []
+        self.max_stims = 0
+        self.max_responses = 0
+        self.max_trials = 0
+
+        logger.info(f"Building metadata index for {len(self.subjects)} subjects...")
+        for subj in self.subjects:
+            path = self.data_dir / f"{subj}.pt"
+            # Load just to get metadata, then discard
             subj_data = torch.load(path, weights_only=False)
+
+            n_targets = len(subj_data["targets"])
+
+            # Get dimensions from first target (assuming consistent across targets)
+            x_conv = subj_data["convergent"]["data"][0]
+            x_div = subj_data["divergent"]["data"][0]
+
+            self.max_stims = max(self.max_stims, x_conv.shape[0])
+            self.max_responses = max(self.max_responses, x_div.shape[0])
+            self.max_trials = max(self.max_trials, x_conv.shape[1])
 
             if verbose:
                 logger.info(
-                    f"Loading subject {subj}, "
-                    f"n_stim={subj_data['convergent']['data'][0].shape[0]}, n_soz = {subj_data['target_labels'].sum()}, "
-                    f"n_resp={subj_data['divergent']['data'][0].shape[0]}"
+                    f"Indexed subject {subj}, "
+                    f"n_stim={x_conv.shape[0]}, n_soz={subj_data['target_labels'].sum()}, "
+                    f"n_resp={x_div.shape[0]}, n_targets={n_targets}"
                 )
 
-            # Each subject may have multiple electrodes (targets)
-            n_targets = len(subj_data["targets"])
-            # conv_currents = subj_data["convergent"]["stim_trial_currents"]  # [n_stims, n_trials]
-            conv_coords = subj_data["convergent"]["stim_trial_coords"]  # [n_stims, 3]
-            div_coords = subj_data["divergent"]["response_trial_coords"]  # [n_responses, 3]
-
             for t in range(n_targets):
-                x_conv = subj_data["convergent"]["data"][t]  # e.g., [n_stims, n_trials, n_times]
-                x_div = subj_data["divergent"]["data"][t]  # e.g., [n_responses, n_trials, n_times]
-                y = subj_data["target_labels"][t]
+                self.sample_index.append((subj, t))
 
-                # reshape div_currents to [n_responses, n_trials]
-                # div_currents = subj_data["divergent"]["target_trial_currents"][t]  # [n_trials]
-                # div_currents = torch.tile(
-                #     div_currents, dims=(x_div.shape[0], 1)
-                # )  # [n_responses, n_trials]
+            del subj_data  # Free memory immediately
 
-                max_stims = max(max_stims, x_conv.shape[0])
-                max_responses = max(max_responses, x_div.shape[0])
-                max_trials = max(
-                    max_trials, x_conv.shape[1]
-                )  # assuming conv and div have same n_trials
+        logger.success(
+            f"✅ Indexed {len(self.sample_index)} samples from {len(self.subjects)} subjects."
+        )
+        logger.info(
+            f"Max dimensions: stims={self.max_stims}, responses={self.max_responses}, trials={self.max_trials}"
+        )
 
-                # coordinate masks
-                conv_coord_mask = torch.all(torch.isnan(conv_coords), dim=1)
-                div_coord_mask = torch.all(torch.isnan(div_coords), dim=1)
-                conv_coords = self.pos_encoder(conv_coords)
-                div_coords = self.pos_encoder(div_coords)
-                conv_coords[conv_coord_mask] = torch.full((self.embed_dim,), np.nan)
-                div_coords[div_coord_mask] = torch.full((self.embed_dim,), np.nan)
+    def _load_subject(self, subj):
+        """Load and cache a subject's data."""
+        if subj in self._cache:
+            # Move to end (most recently used)
+            self._cache.move_to_end(subj)
+            return self._cache[subj]
 
-                sample = {
-                    "subject": subj,
-                    "target_idx": t,
-                    "convergent": x_conv,
-                    "divergent": x_div,
-                    # "convergent_currents": conv_currents,
-                    # "divergent_currents": div_currents,
-                    "convergent_coords": conv_coords,
-                    "divergent_coords": div_coords,
-                    "label": y,
-                }
+        # Load from disk
+        path = self.data_dir / f"{subj}.pt"
+        subj_data = torch.load(path, weights_only=False)
 
-                self.data.append(sample)
+        # Process and store
+        processed = self._process_subject(subj, subj_data)
 
-        for sample in self.data:
-            # Now apply padding to all samples to have uniform sizes
-            # pads last dimension before and after by 0,0
-            # pads 2nd dimension (n_trials) by 0 before and (max_trials - current) after
-            # pads 1st dimension (n_stims or n_responses) by 0 before and (max_stims - current) or (max_responses - current) after
-            sample["divergent"] = torch.nn.functional.pad(
-                sample["divergent"],
-                (
-                    0,
-                    0,
-                    0,
-                    max_trials - sample["divergent"].shape[1],
-                    0,
-                    max_responses - sample["divergent"].shape[0],
-                ),
+        # Add to cache
+        self._cache[subj] = processed
+
+        # Evict oldest if cache is full
+        while len(self._cache) > self.cache_size:
+            evicted_subj = next(iter(self._cache))
+            del self._cache[evicted_subj]
+            if self.verbose:
+                logger.debug(f"Evicted {evicted_subj} from cache")
+
+        return processed
+
+    def _process_subject(self, subj, subj_data):
+        """Process a subject's data into ready-to-use samples."""
+        samples = {}
+
+        conv_coords_raw = subj_data["convergent"]["stim_trial_coords"]
+        div_coords_raw = subj_data["divergent"]["response_trial_coords"]
+
+        # Encode coordinates once per subject
+        conv_coord_mask = torch.all(torch.isnan(conv_coords_raw), dim=1)
+        div_coord_mask = torch.all(torch.isnan(div_coords_raw), dim=1)
+        conv_coords = self.pos_encoder(conv_coords_raw)
+        div_coords = self.pos_encoder(div_coords_raw)
+        conv_coords[conv_coord_mask] = torch.full((self.embed_dim,), np.nan)
+        div_coords[div_coord_mask] = torch.full((self.embed_dim,), np.nan)
+
+        n_targets = len(subj_data["targets"])
+
+        for t in range(n_targets):
+            x_conv = subj_data["convergent"]["data"][t]
+            x_div = subj_data["divergent"]["data"][t]
+            y = subj_data["target_labels"][t]
+
+            # Apply padding
+            x_conv_padded = torch.nn.functional.pad(
+                x_conv,
+                (0, 0, 0, self.max_trials - x_conv.shape[1], 0, self.max_stims - x_conv.shape[0]),
                 value=np.nan,
             )
-            sample["convergent"] = torch.nn.functional.pad(
-                sample["convergent"],
-                (
-                    0,
-                    0,
-                    0,
-                    max_trials - sample["convergent"].shape[1],
-                    0,
-                    max_stims - sample["convergent"].shape[0],
-                ),
+            x_div_padded = torch.nn.functional.pad(
+                x_div,
+                (0, 0, 0, self.max_trials - x_div.shape[1], 0, self.max_responses - x_div.shape[0]),
                 value=np.nan,
             )
-            # sample["divergent_currents"] = torch.nn.functional.pad(
-            #     sample["divergent_currents"],
-            #     (
-            #         0,
-            #         max_trials - sample["divergent_currents"].shape[1],
-            #         0,
-            #         max_responses - sample["divergent_currents"].shape[0],
-            #     ),
-            #     value=0,
-            # )
-            # sample["convergent_currents"] = torch.nn.functional.pad(
-            #     sample["convergent_currents"],
-            #     (
-            #         0,
-            #         max_trials - sample["convergent_currents"].shape[1],
-            #         0,
-            #         max_stims - sample["convergent_currents"].shape[0],
-            #     ),
-            #     value=0,
-            # )
-            sample["divergent_coords"] = torch.nn.functional.pad(
-                sample["divergent_coords"],
-                (
-                    0,
-                    0,
-                    0,
-                    max_responses - sample["divergent_coords"].shape[0],
-                ),
+            conv_coords_padded = torch.nn.functional.pad(
+                conv_coords,
+                (0, 0, 0, self.max_stims - conv_coords.shape[0]),
                 value=0,
             )
-            sample["convergent_coords"] = torch.nn.functional.pad(
-                sample["convergent_coords"],
-                (
-                    0,
-                    0,
-                    0,
-                    max_stims - sample["convergent_coords"].shape[0],
-                ),
+            div_coords_padded = torch.nn.functional.pad(
+                div_coords,
+                (0, 0, 0, self.max_responses - div_coords.shape[0]),
                 value=0,
             )
 
-            # Create padding masks
-            sample["convergent_mask"] = torch.isnan(sample["convergent"]).all(
-                dim=-1
-            )  # [n_stims, n_trials]
-            sample["divergent_mask"] = torch.isnan(sample["divergent"]).all(
-                dim=-1
-            )  # [n_responses, n_trials]
+            # Create masks
+            conv_mask = torch.isnan(x_conv_padded).all(dim=-1)
+            div_mask = torch.isnan(x_div_padded).all(dim=-1)
 
-            # Replace nan with zeros for model input
-            sample["convergent"] = torch.nan_to_num(sample["convergent"], nan=0)
-            sample["divergent"] = torch.nan_to_num(sample["divergent"], nan=0)
-            # sample["convergent_currents"] = torch.nan_to_num(sample["convergent_currents"], nan=0)
-            # sample["divergent_currents"] = torch.nan_to_num(sample["divergent_currents"], nan=0)
-            sample["convergent_coords"] = torch.nan_to_num(sample["convergent_coords"], nan=0)
-            sample["divergent_coords"] = torch.nan_to_num(sample["divergent_coords"], nan=0)
+            # Replace nan with zeros
+            x_conv_padded = torch.nan_to_num(x_conv_padded, nan=0)
+            x_div_padded = torch.nan_to_num(x_div_padded, nan=0)
+            conv_coords_padded = torch.nan_to_num(conv_coords_padded, nan=0)
+            div_coords_padded = torch.nan_to_num(div_coords_padded, nan=0)
 
-        logger.success(f"✅ Loaded {len(self.data)} total samples from {len(subjects)} subjects.")
+            samples[t] = {
+                "subject": subj,
+                "target_idx": t,
+                "convergent": x_conv_padded,
+                "divergent": x_div_padded,
+                "convergent_coords": conv_coords_padded,
+                "divergent_coords": div_coords_padded,
+                "convergent_mask": conv_mask,
+                "divergent_mask": div_mask,
+                "label": y,
+            }
+
+        return samples
 
     def __len__(self):
-        return len(self.data)
+        return len(self.sample_index)
 
     def __getitem__(self, idx):
-        sample = self.data[idx]
+        subj, target_idx = self.sample_index[idx]
+
+        # Get from cache (loads if needed)
+        subj_samples = self._load_subject(subj)
+        sample = subj_samples[target_idx]
 
         x = {
             "convergent": sample["convergent"],
@@ -197,10 +201,13 @@ class SEEGDataset(Dataset):
         }
         y = sample["label"]
 
-        # if self.transform:
-        #     x = self.transform(x)
-
         return x, y
+
+    # For compatibility with get_subject_indices and compute_class_weights
+    @property
+    def data(self):
+        """Returns a lightweight list for indexing by subject (lazy)."""
+        return [{"subject": subj, "label": None} for subj, _ in self.sample_index]
 
 
 class FourierPositionalEncoding(nn.Module):
