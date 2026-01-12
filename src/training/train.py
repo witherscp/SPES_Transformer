@@ -23,6 +23,35 @@ from src.models.model import SEEGFusionModel, BaselineModel
 from src.training.evaluate import evaluate_model
 
 
+def get_rng_states():
+    """Capture all RNG states for reproducibility."""
+    states = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        states["cuda"] = torch.cuda.get_rng_state_all()
+    return states
+
+
+def set_rng_states(states):
+    """Restore all RNG states from checkpoint."""
+    random.setstate(states["python"])
+    np.random.set_state(states["numpy"])
+    # Ensure torch RNG state is on CPU as required by set_rng_state
+    torch_state = states["torch"]
+    if torch_state.device.type != "cpu":
+        torch_state = torch_state.cpu()
+    torch.set_rng_state(torch_state)
+    if torch.cuda.is_available() and "cuda" in states:
+        # CUDA RNG states should already be on correct devices, but ensure they're proper tensors
+        cuda_states = states["cuda"]
+        # Handle case where states might have been moved to wrong device
+        cuda_states = [s.cpu() if s.device.type != "cpu" else s for s in cuda_states]
+        torch.cuda.set_rng_state_all(cuda_states)
+
+
 def find_latest_checkpoint(save_dir, cohort_id):
     """Find the latest checkpoint and hyperparameter set to resume from.
     
@@ -58,34 +87,6 @@ def find_latest_checkpoint(save_dir, cohort_id):
                 latest_checkpoint = ckpt_file
     
     return latest_hp_id, latest_epoch, latest_checkpoint
-
-
-def load_checkpoint_state(checkpoint_path, model, optimizer=None, scheduler=None):
-    """Load model and optionally optimizer/scheduler state from checkpoint.
-    
-    Args:
-        checkpoint_path: Path to checkpoint file
-        model: Model to load weights into
-        optimizer: Optional optimizer to restore state
-        scheduler: Optional scheduler to restore state
-        
-    Returns:
-        dict: Loaded checkpoint state
-    """
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    
-    # Handle both full checkpoint dicts and raw state_dicts
-    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
-        if optimizer is not None and "optimizer_state_dict" in checkpoint:
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        if scheduler is not None and "scheduler_state_dict" in checkpoint:
-            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        return checkpoint
-    else:
-        # Raw state_dict (current format)
-        model.load_state_dict(checkpoint)
-        return {"model_state_dict": checkpoint}
 
 
 def sample_hyperparameters(kwargs, cohort_id, hp_id):
@@ -330,18 +331,6 @@ def train_model(
                 if param.grad is not None:
                     writer.add_histogram(f"Grads/{name}", param.grad, epoch)
 
-        # Save checkpoint for every epoch (with full state for resumption)
-        checkpoint = {
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
-            "epoch": epoch,
-            "best_val_loss": best_val_loss,
-            "epochs_no_improve": epochs_no_improve,
-            "history": history,
-        }
-        torch.save(checkpoint, save_dir / f"{save_prefix}_epoch_{epoch}.pt")
-
         # Early stopping logic
         if use_val:
             improved = epoch_val_loss < best_val_loss
@@ -351,6 +340,8 @@ def train_model(
                 best_epoch = epoch
                 best_weights = model.state_dict()
                 torch.save(best_weights, save_dir / f"{save_prefix}_best_model.pt")
+                early_stop = False
+                logger.info(f"✅ New best validation loss: {best_val_loss:.4f} at epoch {epoch}")
             else:
                 epochs_no_improve += 1
                 if epochs_no_improve > patience:
@@ -358,10 +349,26 @@ def train_model(
                         f"⏹ Early stopping at epoch {epoch} (no val loss improvement for {patience} epochs)"
                     )
                     model.load_state_dict(best_weights)
-                    break
+                    early_stop = True
         else:
             # assume most recent epoch is best
             best_epoch = epoch
+
+        # Save checkpoint for every epoch (with full state for resumption)
+        checkpoint = {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+            "epoch": epoch,
+            "best_val_loss": best_val_loss,
+            "epochs_no_improve": epochs_no_improve,
+            "history": history,
+            "rng_states": get_rng_states(),
+        }
+        torch.save(checkpoint, save_dir / f"{save_prefix}_epoch_{epoch}.pt")
+
+        if early_stop:
+            break
 
     if use_tensorboard:
         writer.close()
@@ -491,6 +498,28 @@ def build_model_optim_scheduler(model_type, hp, device, dataloaders=None, evalua
     return model, optimizer, scheduler
 
 
+def create_dataloaders(train_ds, val_ds, batch_size, generator):
+    """Create dataloaders with proper seeding for reproducibility."""
+    return {
+        "train": DataLoader(
+            train_ds,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=0,  # Use 0 workers for perfect reproducibility
+            pin_memory=False,
+            generator=generator,
+            worker_init_fn=seed_worker,
+        ),
+        "val": DataLoader(
+            val_ds,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=0,
+            pin_memory=False,
+        ),
+    }
+
+
 def main(model_type, cohort_id, resume=False, **kwargs):
 
     logger.info(f"Using cohort split {cohort_id}")
@@ -540,22 +569,13 @@ def main(model_type, cohort_id, resume=False, **kwargs):
         train_ds = Subset(full_dataset, get_subject_indices(full_dataset, train_subjs))
         val_ds = Subset(full_dataset, get_subject_indices(full_dataset, val_subjs))
 
-        dataloaders = {
-            "train": DataLoader(
-                train_ds,
-                batch_size=kwargs["parameters"]["batch_size"],
-                shuffle=True,
-                num_workers=2,
-                pin_memory=False,
-            ),
-            "val": DataLoader(
-                val_ds,
-                batch_size=kwargs["parameters"]["batch_size"],
-                shuffle=False,
-                num_workers=2,
-                pin_memory=False,
-            ),
-        }
+        # Create generator for dataloader reproducibility
+        g = torch.Generator()
+        g.manual_seed(SEED + hp_id)
+
+        dataloaders = create_dataloaders(
+            train_ds, val_ds, kwargs["parameters"]["batch_size"], g
+        )
 
         model, optimizer, scheduler = build_model_optim_scheduler(
             model_type, hp, device, dataloaders, **kwargs
@@ -568,24 +588,45 @@ def main(model_type, cohort_id, resume=False, **kwargs):
         
         if resume and hp_id == start_hp_id and resume_checkpoint is not None:
             logger.info(f"Resuming from checkpoint: {resume_checkpoint}")
-            ckpt = torch.load(resume_checkpoint, map_location=device)
+            # Load to CPU first to avoid RNG state device issues
+            ckpt = torch.load(resume_checkpoint, map_location="cpu", weights_only=False)
             
             if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
                 model.load_state_dict(ckpt["model_state_dict"])
+                model.to(device)
+                
                 if "optimizer_state_dict" in ckpt:
                     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                    # Move optimizer state to correct device
+                    for state in optimizer.state.values():
+                        for k, v in state.items():
+                            if isinstance(v, torch.Tensor):
+                                state[k] = v.to(device)
+                
                 if "scheduler_state_dict" in ckpt and ckpt["scheduler_state_dict"] is not None:
                     scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+                
                 if "best_val_loss" in ckpt:
                     best_val_loss_init = ckpt["best_val_loss"]
+                
                 if "epochs_no_improve" in ckpt:
                     epochs_no_improve_init = ckpt["epochs_no_improve"]
+                
+                # Restore RNG states for reproducibility
+                if "rng_states" in ckpt:
+                    set_rng_states(ckpt["rng_states"])
+                    logger.info("Restored RNG states from checkpoint")
             else:
-                # Old format - just state dict
                 model.load_state_dict(ckpt)
+                model.to(device)
             
             current_start_epoch = start_epoch
-            logger.info(f"Resumed model, optimizer, scheduler. Starting from epoch {current_start_epoch}, epochs_no_improve={epochs_no_improve_init}")
+            logger.info(
+                f"Resumed model, optimizer, scheduler. "
+                f"Starting from epoch {current_start_epoch}, "
+                f"epochs_no_improve={epochs_no_improve_init}, "
+                f"best_val_loss={best_val_loss_init:.4f}"
+            )
             
             # Reset resume for subsequent hp_ids
             resume_checkpoint = None
@@ -655,6 +696,7 @@ def main(model_type, cohort_id, resume=False, **kwargs):
     model, _, _ = build_model_optim_scheduler(model_type, best_config, device, evaluate=True)
 
     model.load_state_dict(best_state)
+    model.to(device)
     model.float()  # Convert to float32 for evaluation to avoid bfloat16/float32 type mismatch
 
     torch.save(model.state_dict(), save_dir / f"cohort{cohort_id}_best_overall_model.pt")
@@ -744,7 +786,8 @@ if __name__ == "__main__":
     np.random.seed(SEED)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(SEED)
-    g = torch.Generator()
-    g.manual_seed(SEED)
+        # For full determinism (may slow down training)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
     main(model_type, cohort_id, resume=resume, **config)

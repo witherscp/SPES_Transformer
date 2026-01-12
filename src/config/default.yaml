@@ -29,7 +29,7 @@ parameters:
   batch_size: 3
   n_steps_per_update: 2
   n_epochs: 50
-  patience: 5
+  patience: 4
   n_folds: 5
   use_clipping: false
   clip_max_norm: 10.0   # only applies if clipping set to true
