@@ -23,6 +23,71 @@ from src.models.model import SEEGFusionModel, BaselineModel
 from src.training.evaluate import evaluate_model
 
 
+def find_latest_checkpoint(save_dir, cohort_id):
+    """Find the latest checkpoint and hyperparameter set to resume from.
+    
+    Args:
+        save_dir: Path to experiment directory
+        cohort_id: Cohort ID being trained
+        
+    Returns:
+        tuple: (hp_id, epoch, checkpoint_path) or (None, None, None) if no checkpoint found
+    """
+    save_dir = Path(save_dir)
+    if not save_dir.exists():
+        return None, None, None
+    
+    # Find all checkpoint files matching pattern cohort{id}_hp{hp_id}_epoch_{epoch}.pt
+    import re
+    pattern = re.compile(rf"cohort{cohort_id}_hp(\d+)_epoch_(\d+)\.pt")
+    
+    latest_hp_id = None
+    latest_epoch = 0
+    latest_checkpoint = None
+    
+    for ckpt_file in save_dir.glob(f"cohort{cohort_id}_hp*_epoch_*.pt"):
+        match = pattern.match(ckpt_file.name)
+        if match:
+            hp_id = int(match.group(1))
+            epoch = int(match.group(2))
+            
+            # Prefer higher hp_id, then higher epoch
+            if latest_hp_id is None or hp_id > latest_hp_id or (hp_id == latest_hp_id and epoch > latest_epoch):
+                latest_hp_id = hp_id
+                latest_epoch = epoch
+                latest_checkpoint = ckpt_file
+    
+    return latest_hp_id, latest_epoch, latest_checkpoint
+
+
+def load_checkpoint_state(checkpoint_path, model, optimizer=None, scheduler=None):
+    """Load model and optionally optimizer/scheduler state from checkpoint.
+    
+    Args:
+        checkpoint_path: Path to checkpoint file
+        model: Model to load weights into
+        optimizer: Optional optimizer to restore state
+        scheduler: Optional scheduler to restore state
+        
+    Returns:
+        dict: Loaded checkpoint state
+    """
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    
+    # Handle both full checkpoint dicts and raw state_dicts
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        if optimizer is not None and "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if scheduler is not None and "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        return checkpoint
+    else:
+        # Raw state_dict (current format)
+        model.load_state_dict(checkpoint)
+        return {"model_state_dict": checkpoint}
+
+
 def sample_hyperparameters(kwargs, cohort_id, hp_id):
     """
     Sample a single hyperparameter configuration from the YAML-defined
@@ -92,6 +157,9 @@ def train_model(
     patience=5,
     use_val=True,
     use_tensorboard=False,
+    start_epoch=1,
+    best_val_loss_init=float("inf"),
+    epochs_no_improve_init=0,
     **kwargs,
 ):
     """
@@ -110,6 +178,9 @@ def train_model(
         patience: early stopping patience (# consecutive epochs without improvement) (default: 5)
         use_val: whether to use validation set for early stopping (default: True)
         use_tensorboard: whether to log to TensorBoard (default: False)
+        start_epoch: epoch to resume from (default: 1)
+        best_val_loss_init: initial best validation loss for resuming (default: inf)
+        epochs_no_improve_init: initial epochs without improvement for resuming (default: 0)
 
     Returns:
         model: trained model (with best weights loaded)
@@ -125,15 +196,16 @@ def train_model(
         tb_run_name = f"{save_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         writer = SummaryWriter(log_dir=f"{kwargs['paths']['tb_logs_path']}/{tb_run_name}")
 
-    best_val_loss = float("inf")
-    best_epoch = 0
-    epochs_no_improve = 0
+    best_val_loss = best_val_loss_init
+    best_epoch = start_epoch - 1 if start_epoch > 1 else 0
+    epochs_no_improve = epochs_no_improve_init
+    best_weights = None
 
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
 
-    logger.info(f"\nStarting training for {n_epochs} epochs on device: {device}")
+    logger.info(f"\nStarting training for {n_epochs} epochs on device: {device} (resuming from epoch {start_epoch})")
 
-    for epoch in range(1, n_epochs + 1):
+    for epoch in range(start_epoch, n_epochs + 1):
         epoch_start = time.time()
         model.train()
 
@@ -258,8 +330,17 @@ def train_model(
                 if param.grad is not None:
                     writer.add_histogram(f"Grads/{name}", param.grad, epoch)
 
-        # Save checkpoint for every epoch
-        torch.save(model.state_dict(), save_dir / f"{save_prefix}_epoch_{epoch}.pt")
+        # Save checkpoint for every epoch (with full state for resumption)
+        checkpoint = {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+            "epoch": epoch,
+            "best_val_loss": best_val_loss,
+            "epochs_no_improve": epochs_no_improve,
+            "history": history,
+        }
+        torch.save(checkpoint, save_dir / f"{save_prefix}_epoch_{epoch}.pt")
 
         # Early stopping logic
         if use_val:
@@ -410,7 +491,7 @@ def build_model_optim_scheduler(model_type, hp, device, dataloaders=None, evalua
     return model, optimizer, scheduler
 
 
-def main(model_type, cohort_id, **kwargs):
+def main(model_type, cohort_id, resume=False, **kwargs):
 
     logger.info(f"Using cohort split {cohort_id}")
 
@@ -424,13 +505,28 @@ def main(model_type, cohort_id, **kwargs):
     logger.info(f"Val subjects: {val_subjs}")
     logger.info(f"Test subjects: {test_subjs}")
 
+    # ---- Check for resume ----
+    save_dir = Path(f"../../experiments/seed{SEED}/cohort{cohort_id}")
+    start_hp_id = 1
+    start_epoch = 1
+    resume_checkpoint = None
+    
+    if resume:
+        resume_hp_id, resume_epoch, resume_checkpoint = find_latest_checkpoint(save_dir, cohort_id)
+        if resume_checkpoint is not None:
+            logger.info(f"Found checkpoint: hp{resume_hp_id}, epoch {resume_epoch} at {resume_checkpoint}")
+            start_hp_id = resume_hp_id
+            start_epoch = resume_epoch + 1  # Resume from next epoch
+        else:
+            logger.warning("Resume requested but no checkpoint found. Starting from scratch.")
+
     # ---- Hyperparameter sweep ----
     best_val_loss = float("inf")
     best_state = None
     best_config = None
     results = []
 
-    for hp_id in range(1, kwargs["parameters"]["n_hp_searches"] + 1):
+    for hp_id in range(start_hp_id, kwargs["parameters"]["n_hp_searches"] + 1):
 
         # Get hyperparameters
         hp = sample_hyperparameters(kwargs, cohort_id, hp_id)
@@ -465,6 +561,35 @@ def main(model_type, cohort_id, **kwargs):
             model_type, hp, device, dataloaders, **kwargs
         )
 
+        # ---- Resume from checkpoint if applicable ----
+        current_start_epoch = 1
+        best_val_loss_init = float("inf")
+        epochs_no_improve_init = 0
+        
+        if resume and hp_id == start_hp_id and resume_checkpoint is not None:
+            logger.info(f"Resuming from checkpoint: {resume_checkpoint}")
+            ckpt = torch.load(resume_checkpoint, map_location=device)
+            
+            if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+                model.load_state_dict(ckpt["model_state_dict"])
+                if "optimizer_state_dict" in ckpt:
+                    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                if "scheduler_state_dict" in ckpt and ckpt["scheduler_state_dict"] is not None:
+                    scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+                if "best_val_loss" in ckpt:
+                    best_val_loss_init = ckpt["best_val_loss"]
+                if "epochs_no_improve" in ckpt:
+                    epochs_no_improve_init = ckpt["epochs_no_improve"]
+            else:
+                # Old format - just state dict
+                model.load_state_dict(ckpt)
+            
+            current_start_epoch = start_epoch
+            logger.info(f"Resumed model, optimizer, scheduler. Starting from epoch {current_start_epoch}, epochs_no_improve={epochs_no_improve_init}")
+            
+            # Reset resume for subsequent hp_ids
+            resume_checkpoint = None
+
         criterion = nn.CrossEntropyLoss(weight=compute_class_weights(train_ds).to(device))
 
         model, history, best_epoch = train_model(
@@ -480,10 +605,13 @@ def main(model_type, cohort_id, **kwargs):
             patience=kwargs["parameters"]["patience"],
             use_val=True,
             cohort_id=cohort_id,
+            start_epoch=current_start_epoch,
+            best_val_loss_init=best_val_loss_init,
+            epochs_no_improve_init=epochs_no_improve_init,
             **kwargs,
         )
 
-        val_loss = history["val_loss"][best_epoch - 1]
+        val_loss = history["val_loss"][best_epoch - current_start_epoch] if history["val_loss"] else float("inf")
 
         results.append(
             {
@@ -578,11 +706,18 @@ if __name__ == "__main__":
         required=True,
         help="Cohort split ID (1-5)",
     )
+    parser.add_argument(
+        "-r",
+        "--resume",
+        action="store_true",
+        help="Resume training from latest checkpoint",
+    )
 
     args = parser.parse_args()
     model_type = args.model
     logdir = args.logdir
     cohort_id = args.cohort
+    resume = args.resume
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -612,4 +747,4 @@ if __name__ == "__main__":
     g = torch.Generator()
     g.manual_seed(SEED)
 
-    main(model_type, cohort_id, **config)
+    main(model_type, cohort_id, resume=resume, **config)
