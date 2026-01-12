@@ -34,7 +34,7 @@ parameters:
   use_clipping: false
   clip_max_norm: 10.0   # only applies if clipping set to true
   random_seed: 1
-  n_hp_searches: 25
+  n_hp_searches: 20
 
   # Hyperparameter search spaces
   search:
