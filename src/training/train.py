@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Subset, RandomSampler
+from torch.utils.data import DataLoader, Subset, Sampler
 from torch.utils.tensorboard import SummaryWriter
 import torch.optim as optim
 
@@ -21,6 +21,34 @@ from src.utils import load_yaml, move_to_device
 from src.datasets.seeg_dataset import SEEGDataset
 from src.models.model import SEEGFusionModel, BaselineModel
 from src.training.evaluate import evaluate_model
+
+
+class EpochSeededRandomSampler(Sampler):
+    """A sampler that generates a reproducible random permutation based on epoch and seed.
+
+    Unlike RandomSampler, this sampler's permutation is fully determined by
+    (seed, hp_id, epoch), making it reproducible across resume.
+    """
+
+    def __init__(self, data_source, seed, hp_id, epoch=1):
+        self.data_source = data_source
+        self.seed = seed
+        self.hp_id = hp_id
+        self.epoch = epoch
+
+    def set_epoch(self, epoch):
+        """Set the current epoch (call this before each epoch)."""
+        self.epoch = epoch
+
+    def __iter__(self):
+        # Create a deterministic permutation based on seed + hp_id + epoch
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.hp_id * 1000 + self.epoch)
+        indices = torch.randperm(len(self.data_source), generator=g).tolist()
+        return iter(indices)
+
+    def __len__(self):
+        return len(self.data_source)
 
 
 def get_rng_states():
@@ -44,6 +72,11 @@ def set_rng_states(states=None):
     Args:
         states (dict): RNG states for python, numpy, torch, and torch.cuda (optional)
     """
+    # Always set deterministic CUDA behavior
+    if torch.cuda.is_available():
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
     if states is None:
         torch.manual_seed(SEED)
         random.seed(SEED)
@@ -51,8 +84,6 @@ def set_rng_states(states=None):
 
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(SEED)
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
 
     elif isinstance(states, dict):
         random.setstate(states["python"])
@@ -238,6 +269,9 @@ def train_model(
         epoch_start = time.time()
         model.train()
 
+        # Set epoch for reproducible shuffling
+        dataloaders["train"].sampler.set_epoch(epoch)
+
         train_loss = 0.0
         train_correct = 0
 
@@ -392,7 +426,6 @@ def train_model(
             "history": history,
             "rng_states": get_rng_states(),
             "best_weights": best_weights,
-            "dataloader_generator_state": dataloaders["train"].sampler.generator.get_state(),
         }
         torch.save(checkpoint, save_dir / f"{save_prefix}_epoch_{epoch}.pt")
 
@@ -558,25 +591,26 @@ def build_model_optim_scheduler(model_type, hp, device, dataloaders=None, evalua
     return model, optimizer, scheduler
 
 
-def create_dataloaders(train_ds, val_ds, batch_size, generator):
-    """Create dataloaders with proper seeding for reproducibility.
+def create_dataloaders(train_ds, val_ds, batch_size, seed, hp_id):
+    """Create dataloaders with epoch-seeded sampler for reproducibility.
     Args:
         train_ds: training dataset (Subset or Dataset)
         val_ds: validation dataset (Subset or Dataset)
         batch_size: batch size
-        generator: torch.Generator for seeding
+        seed: random seed
+        hp_id: hyperparameter ID
     Returns:
         dict: dataloaders with 'train' and 'val' keys
     """
 
-    # Use RandomSampler with generator for reproducible shuffling
-    train_sampler = RandomSampler(train_ds, generator=generator)
+    # Use EpochSeededRandomSampler for reproducible shuffling
+    train_sampler = EpochSeededRandomSampler(train_ds, seed=seed, hp_id=hp_id, epoch=1)
 
     return {
         "train": DataLoader(
             train_ds,
             batch_size=batch_size,
-            sampler=train_sampler,  # Use sampler instead of shuffle
+            sampler=train_sampler,
             num_workers=0,
             pin_memory=False,
             worker_init_fn=seed_worker,
@@ -648,38 +682,27 @@ def main(model_type, cohort_id, resume=False, **kwargs):
         epochs_no_improve_init = 0
         best_weights_restored = None
         ckpt = None
-        dataloader_generator_state = None
 
         if resume and hp_id == start_hp_id and resume_checkpoint is not None:
             logger.info(f"Resuming from checkpoint: {resume_checkpoint}")
             ckpt = torch.load(resume_checkpoint, map_location="cpu", weights_only=False)
 
-            # Restore RNG states FIRST, before creating dataloaders
+            # Restore RNG states
             if isinstance(ckpt, dict) and "rng_states" in ckpt:
                 set_rng_states(ckpt["rng_states"])
                 logger.info("Restored RNG states from checkpoint")
             else:
                 set_rng_states()
 
-            # Save dataloader generator state for restoration after dataloader creation
-            if isinstance(ckpt, dict) and "dataloader_generator_state" in ckpt:
-                dataloader_generator_state = ckpt["dataloader_generator_state"]
-
             current_start_epoch = start_epoch
         else:
             # Fresh start: seed RNG deterministically
             set_rng_states()
 
-        # Create generator for dataloader reproducibilit
-        g = torch.Generator()
-        g.manual_seed(SEED + hp_id)
-
-        dataloaders = create_dataloaders(train_ds, val_ds, kwargs["parameters"]["batch_size"], g)
-
-        # Restore dataloader generator state if resuming
-        if dataloader_generator_state is not None:
-            dataloaders["train"].sampler.generator.set_state(dataloader_generator_state)
-            logger.info("Restored dataloader generator state from checkpoint")
+        # Create dataloaders with epoch-seeded sampler (shuffle is deterministic per epoch)
+        dataloaders = create_dataloaders(
+            train_ds, val_ds, kwargs["parameters"]["batch_size"], SEED, hp_id
+        )
 
         model, optimizer, scheduler = build_model_optim_scheduler(
             model_type, hp, device, dataloaders, **kwargs
