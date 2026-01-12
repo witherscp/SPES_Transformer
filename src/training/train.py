@@ -216,6 +216,10 @@ def train_model(
                     outputs = model(inputs)
                     loss = criterion(outputs, labels)
 
+                    if torch.isnan(loss):
+                        logger.error(f"NaN loss detected at batch {step}")
+                        continue
+
                     val_loss += loss.item() * inputs["convergent"].size(0)
                     _, preds = torch.max(outputs, 1)
                     val_correct += torch.sum(preds == labels.data)
@@ -411,7 +415,7 @@ def main(model_type, cohort_id, **kwargs):
     logger.info(f"Using cohort split {cohort_id}")
 
     # ---- Resolve subjects per split ----
-    subjects = np.loadtxt("../../data/test_subjs.txt", dtype=str)
+    subjects = np.loadtxt("../../data/subjects.txt", dtype=str)
     shuffled_subjects = np.random.RandomState(SEED).permutation(subjects)
     splits = get_splits(shuffled_subjects, n_splits=kwargs["parameters"]["n_folds"])
     train_subjs, val_subjs, test_subjs = splits[cohort_id - 1]
