@@ -392,6 +392,7 @@ def train_model(
             "history": history,
             "rng_states": get_rng_states(),
             "best_weights": best_weights,
+            "dataloader_generator_state": dataloaders["train"].sampler.generator.get_state(),
         }
         torch.save(checkpoint, save_dir / f"{save_prefix}_epoch_{epoch}.pt")
 
@@ -641,25 +642,51 @@ def main(model_type, cohort_id, resume=False, **kwargs):
         train_ds = Subset(full_dataset, get_subject_indices(full_dataset, train_subjs))
         val_ds = Subset(full_dataset, get_subject_indices(full_dataset, val_subjs))
 
-        # Create generator for dataloader reproducibility
-        g = torch.Generator()
-        g.manual_seed(SEED + hp_id)
-
-        dataloaders = create_dataloaders(train_ds, val_ds, kwargs["parameters"]["batch_size"], g)
-
-        model, optimizer, scheduler = build_model_optim_scheduler(
-            model_type, hp, device, dataloaders, **kwargs
-        )
-
-        # ---- Resume from checkpoint if applicable ----
+        # ---- Resume: Load checkpoint and restore RNG states ----
         current_start_epoch = 1
         best_val_loss_init = float("inf")
         epochs_no_improve_init = 0
+        best_weights_restored = None
+        ckpt = None
+        dataloader_generator_state = None
 
         if resume and hp_id == start_hp_id and resume_checkpoint is not None:
             logger.info(f"Resuming from checkpoint: {resume_checkpoint}")
             ckpt = torch.load(resume_checkpoint, map_location="cpu", weights_only=False)
 
+            # Restore RNG states FIRST, before creating dataloaders
+            if isinstance(ckpt, dict) and "rng_states" in ckpt:
+                set_rng_states(ckpt["rng_states"])
+                logger.info("Restored RNG states from checkpoint")
+            else:
+                set_rng_states()
+
+            # Save dataloader generator state for restoration after dataloader creation
+            if isinstance(ckpt, dict) and "dataloader_generator_state" in ckpt:
+                dataloader_generator_state = ckpt["dataloader_generator_state"]
+
+            current_start_epoch = start_epoch
+        else:
+            # Fresh start: seed RNG deterministically
+            set_rng_states()
+
+        # Create generator for dataloader reproducibilit
+        g = torch.Generator()
+        g.manual_seed(SEED + hp_id)
+
+        dataloaders = create_dataloaders(train_ds, val_ds, kwargs["parameters"]["batch_size"], g)
+
+        # Restore dataloader generator state if resuming
+        if dataloader_generator_state is not None:
+            dataloaders["train"].sampler.generator.set_state(dataloader_generator_state)
+            logger.info("Restored dataloader generator state from checkpoint")
+
+        model, optimizer, scheduler = build_model_optim_scheduler(
+            model_type, hp, device, dataloaders, **kwargs
+        )
+
+        # ---- Load model/optimizer/scheduler state ----
+        if ckpt is not None:
             if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
                 model.load_state_dict(ckpt["model_state_dict"])
                 model.to(device)
@@ -680,22 +707,12 @@ def main(model_type, cohort_id, resume=False, **kwargs):
                 if "epochs_no_improve" in ckpt:
                     epochs_no_improve_init = ckpt["epochs_no_improve"]
 
-                # NEW: Restore best_weights if available
                 if "best_weights" in ckpt and ckpt["best_weights"] is not None:
                     best_weights_restored = ckpt["best_weights"]
-                else:
-                    best_weights_restored = None
-
-                # Restore RNG states for reproducibility
-                if "rng_states" in ckpt:
-                    set_rng_states(ckpt["rng_states"])
-                    logger.info("Restored RNG states from checkpoint")
             else:
                 model.load_state_dict(ckpt)
-                set_rng_states()
                 model.to(device)
 
-            current_start_epoch = start_epoch
             logger.info(
                 f"Resumed model, optimizer, scheduler. "
                 f"Starting from epoch {current_start_epoch}, "
@@ -724,9 +741,7 @@ def main(model_type, cohort_id, resume=False, **kwargs):
             start_epoch=current_start_epoch,
             best_val_loss_init=best_val_loss_init,
             epochs_no_improve_init=epochs_no_improve_init,
-            best_weights_init=(
-                best_weights_restored if resume and hp_id == start_hp_id else None
-            ),  # NEW
+            best_weights_init=best_weights_restored,
             **kwargs,
         )
 
