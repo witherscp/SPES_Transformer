@@ -201,6 +201,7 @@ def train_model(
     best_epoch = start_epoch - 1 if start_epoch > 1 else 0
     epochs_no_improve = epochs_no_improve_init
     best_weights = None
+    early_stop = False
 
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
 
@@ -340,7 +341,6 @@ def train_model(
                 best_epoch = epoch
                 best_weights = model.state_dict()
                 torch.save(best_weights, save_dir / f"{save_prefix}_best_model.pt")
-                early_stop = False
                 logger.info(f"✅ New best validation loss: {best_val_loss:.4f} at epoch {epoch}")
             else:
                 epochs_no_improve += 1
