@@ -12,7 +12,7 @@ class SEEGDataset(Dataset):
     def __init__(
         self,
         subjects=None,
-        data_dir="../../data/processed",
+        data_dir="/panfs/accrepfs.vampire/nobackup/p_englot_group/SPES_Transformer/data/processed",
         transform=None,
         embed_dim=128,
         verbose=True,
@@ -135,7 +135,7 @@ class SEEGDataset(Dataset):
         samples["_shared"] = {
             "subject": subj,
             "convergent_coords": conv_coords,  # unpadded
-            "divergent_coords": div_coords,    # unpadded
+            "divergent_coords": div_coords,  # unpadded
             "n_stims": conv_coords.shape[0],
             "n_responses": div_coords.shape[0],
         }
@@ -161,8 +161,8 @@ class SEEGDataset(Dataset):
 
             samples[t] = {
                 "target_idx": t,
-                "convergent": x_conv,       # unpadded
-                "divergent": x_div,         # unpadded
+                "convergent": x_conv,  # unpadded
+                "divergent": x_div,  # unpadded
                 "conv_nan_mask": conv_nan_mask,
                 "div_nan_mask": div_nan_mask,
                 "n_trials": n_trials_conv,
@@ -210,10 +210,10 @@ class SEEGDataset(Dataset):
         # Build masks (padded regions + original NaN positions)
         conv_mask = torch.ones(self.max_stims, self.max_trials, dtype=torch.bool)
         div_mask = torch.ones(self.max_responses, self.max_trials, dtype=torch.bool)
-        
+
         n_s, n_t = x_conv.shape[:2]
         n_r = x_div.shape[0]
-        
+
         conv_mask[:n_s, :n_t] = sample["conv_nan_mask"]
         div_mask[:n_r, :n_t] = sample["div_nan_mask"]
 
